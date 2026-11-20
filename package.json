@@ -11,7 +11,18 @@
     "./locale/*.json": "./locale/*.json",
     "./icon": "./icon.svg"
   },
-  "files": ["src/host", "src/shared", "dist", "cordis.patch.yml", "locale/*.json", "icon.svg", "docs"],
+  "files": [
+    "src/host",
+    "src/shared",
+    "dist/client.js",
+    "dist/client.js.LEGAL.txt",
+    "dist/runner-image.tar.gz",
+    "dist/runner-image.json",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "docs"
+  ],
   "scripts": {
     "build": "esbuild src/client/entry.js --bundle --platform=browser --format=iife --target=es2022 --legal-comments=linked --outfile=dist/client.js",
     "build:runner": "docker build --platform linux/amd64 --tag dsh-workspace-browser-runner:0.1.2 runner",

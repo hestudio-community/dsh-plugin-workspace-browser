@@ -51,8 +51,10 @@ function definition(execute) {
 export function createAgent(ctx, pool, enabled) {
   let provider = 'disabled';
   let shuttingDown = false;
-  const tasks = new Set();
-  const available = () => !shuttingDown && provider === 'enabled';
+  let desired = enabled;
+  let binding;
+  let retiring;
+  const available = () => desired && !shuttingDown && provider === 'enabled';
 
   function sessionRoom(sessionId) {
     const workspace = pool.findSession(sessionId);
@@ -91,28 +93,67 @@ export function createAgent(ctx, pool, enabled) {
   }
 
   // Only this child waits for the tool registry; the manual browser stays active.
-  const binding = enabled ? ctx.inject(['tools'], (agentCtx) => {
-    if (shuttingDown) return;
-    let unregister;
-    try {
-      unregister = agentCtx.tools.register(definition((args, exec) => {
-        const task = run(args, exec);
-        tasks.add(task);
-        const done = () => tasks.delete(task);
-        task.then(done, done);
-        return task;
-      }));
-      provider = 'enabled';
-    } catch {
-      provider = 'conflict';
-      return () => { provider = 'disabled'; };
+  function reconcile() {
+    if (!desired || shuttingDown || binding || retiring) return;
+    const instance = binding = {};
+    instance.fiber = ctx.inject(['tools'], (agentCtx) => {
+      if (binding !== instance || !desired || shuttingDown) return;
+      const tasks = new Set();
+      let active = true;
+      let unregister;
+      try {
+        unregister = agentCtx.tools.register(definition((args, exec) => {
+          if (!active || binding !== instance) return Promise.reject(denied());
+          const task = run(args, exec);
+          tasks.add(task);
+          const done = () => tasks.delete(task);
+          task.then(done, done);
+          return task;
+        }));
+        provider = 'enabled';
+      } catch {
+        provider = 'conflict';
+      }
+      return async () => {
+        active = false;
+        if (binding === instance) {
+          provider = 'disabled';
+          pool.invalidateAll();
+        }
+        try { unregister?.(); } finally { await Promise.allSettled(tasks); }
+      };
+    });
+  }
+
+  function setEnabled(next) {
+    if (shuttingDown || desired === next) return retiring;
+    desired = next;
+    if (next) {
+      reconcile();
+      return retiring;
     }
-    return async () => {
-      provider = 'disabled';
-      pool.invalidateAll();
-      try { unregister(); } finally { await Promise.allSettled(tasks); }
-    };
-  }) : undefined;
+    const previous = binding;
+    binding = undefined;
+    provider = 'disabled';
+    pool.invalidateAll();
+    if (!previous) return retiring;
+    retiring = Promise.resolve().then(() => previous.fiber.dispose()).then(() => {
+      retiring = undefined;
+      reconcile();
+    }, (error) => {
+      retiring = undefined;
+      throw error;
+    });
+    return retiring;
+  }
+
+  function stopAdmission() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    pool.invalidateAll();
+  }
+
+  reconcile();
 
   return {
     status(sessionId) {
@@ -130,12 +171,12 @@ export function createAgent(ctx, pool, enabled) {
       if (room) pool.invalidate(room, sessionId);
       return status(room, sessionId);
     },
-    stopAdmission() {
-      shuttingDown = true;
-      pool.invalidateAll();
-    },
+    setEnabled,
+    stopAdmission,
     async dispose() {
-      await binding?.dispose();
+      stopAdmission();
+      await retiring;
+      await binding?.fiber.dispose();
     },
   };
 }

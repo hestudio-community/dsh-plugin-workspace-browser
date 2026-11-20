@@ -1,5 +1,6 @@
 import en from '../../locale/en.json' with { type: 'json' };
 import zh from '../../locale/zh.json' with { type: 'json' };
+import { makeAgentSettings } from './agent-settings.js';
 import { makeBrowserView } from './browser-view.js';
 import { panelStyle } from './styles.js';
 
@@ -56,6 +57,15 @@ export function makeClient({ React, RFB }) {
     ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: NS, locale: NS,
     }, (props) => BrowserTab({ ...props, openWebSocket }))), 'Workspace Browser: tab body');
+
+    ctx.inject(['configForms', 'slots'], (settingsCtx) => {
+      const { configForms, slots } = settingsCtx;
+      const entry = 'workspace-browser';
+      const AgentSettings = makeAgentSettings(React, configForms.get(entry));
+      settingsCtx.effect(() => configForms.whileServed([entry], () => slots.inject('plugins.bundle.config', () => slots.register({
+        name: 'plugins.bundle.config', key: NS, locale: NS,
+      }, ({ t, view }) => view === 'page' ? h(AgentSettings, { t }) : null))), 'Workspace Browser: plugin settings');
+    });
   }
 
   return { inject: ['slots', 'locale', 'uiWorkspace', 'sidebarRightTabs', 'connection'], apply };

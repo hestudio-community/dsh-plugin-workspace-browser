@@ -467,29 +467,46 @@ test('the agent integration defaults on, but manual browser endpoints do not wai
   const register = ({ path }) => { routes.add(path); return () => routes.delete(path); };
   for (const [options, agentEnabled] of [[{}, true], [{ agentEnabled: false }, false]]) {
     const config = Config(options);
-    assert.equal(config.agentEnabled, agentEnabled);
+    assert.equal(config.agentEnabled.get(), agentEnabled);
+    assert.deepEqual(Object.keys(Config.dict).filter((key) => Config.dict[key].meta.volatile), ['agentEnabled']);
+    let currentValue = agentEnabled;
     let injectionCount = 0;
+    let bindingDisposals = 0;
+    let changed;
     let dispose;
     const ctx = {
       workspaceRegistry: {},
       connection: {},
       webServer: { register, registerUpgrade: register },
       effect(setup) { dispose = setup(); },
+      on(event, listener) {
+        assert.equal(event, 'loader/volatile-update');
+        changed = listener;
+        return () => { changed = undefined; };
+      },
       inject(services) {
         injectionCount++;
         assert.deepEqual(services, ['tools']);
-        return { dispose() {} }; // The tool registry never becomes available.
+        return { dispose() { bindingDisposals++; } }; // The tool registry never becomes available.
       },
     };
     assert.deepEqual(inject, ['workspaceRegistry', 'connection', 'webServer']);
-    apply(ctx, config);
+    apply(ctx, { ...config, agentEnabled: { get: () => currentValue } });
     try {
       assert.equal(injectionCount, agentEnabled ? 1 : 0);
       assert.ok(routes.has('/dsh-browser/v2/view'));
       assert.ok(routes.has('/dsh-browser/v2/browser/status'));
       assert.ok(routes.has('/dsh-browser/v2/stream'));
       assert.ok(!routes.has('/dsh-browser/v1/view'));
+      const before = [...routes];
+      currentValue = !agentEnabled;
+      changed();
+      await Promise.resolve();
+      assert.equal(injectionCount, 1);
+      assert.equal(bindingDisposals, agentEnabled ? 1 : 0);
+      assert.deepEqual([...routes], before);
     } finally { await dispose(); }
+    assert.equal(changed, undefined);
     assert.equal(routes.size, 0);
   }
 });
@@ -499,9 +516,12 @@ test('Session grants work before the display connects and last until revoked or 
   let tool;
   let activate;
   let deactivate;
+  let disposeGate;
   let unregisters = 0;
+  let injections = 0;
   const ctx = {
     inject(services, setup) {
+      injections++;
       assert.deepEqual(services, ['tools']);
       activate = (collision = false) => { deactivate = setup({
         tools: { register(value) {
@@ -515,6 +535,7 @@ test('Session grants work before the display connects and last until revoked or 
         const cleanup = deactivate;
         deactivate = undefined;
         await cleanup?.();
+        await disposeGate;
       } };
     },
   };
@@ -610,5 +631,45 @@ test('Session grants work before the display connects and last until revoked or 
   assert.deepEqual(agent.status('s'), { provider: 'disabled', canGrant: false, access: null });
   assert.equal(tool, undefined);
   assert.equal(unregisters, 1);
+  assert.equal(reconnected.isCurrent(), true);
+
+  const staleActivation = activate;
+  activate();
+  const staleTool = tool;
+  agent.grant('s');
+  agent.grant('other');
+  interrupted = cancelled();
+  const gate = Promise.withResolvers();
+  disposeGate = gate.promise;
+  const disabling = agent.setEnabled(false);
+  assert.deepEqual(agent.status('s'), { provider: 'disabled', canGrant: false, access: null });
+  assert.equal(agent.status('other').access, null);
+  assert.equal(reconnected.isCurrent(), true);
+  await interrupted;
+  assert.equal(tool, undefined);
+  assert.equal(unregisters, 2);
+  assert.equal(agent.setEnabled(true), disabling);
+  assert.equal(agent.setEnabled(false), disabling);
+  assert.equal(agent.setEnabled(true), disabling);
+  assert.equal(injections, 1);
+  staleActivation();
+  assert.equal(tool, undefined);
+  gate.resolve();
+  await disabling;
+  assert.equal(injections, 2);
+  activate();
+  assert.equal(agent.status('s').access, null);
+  assert.equal(agent.status('other').access, null);
+  await assert.rejects(run('s'), { code: 'agent_access_denied' });
+  agent.grant('s');
+  await assert.rejects(staleTool.execute({ action: 'list' }, { agent: { id: 's' } }), { code: 'agent_access_denied' });
+  assert.deepEqual(await run('s'), { ok: true });
+
+  const shutdown = agent.setEnabled(false);
+  agent.setEnabled(true);
+  agent.stopAdmission();
+  await shutdown;
+  assert.equal(injections, 2);
+  assert.equal(tool, undefined);
   assert.equal(reconnected.isCurrent(), true);
 });

@@ -39,5 +39,14 @@
   "reconnect": "Reconnect",
   "requestFailed": "The browser service could not complete the request.",
   "agentAccess": "Agent access",
-  "providerConflict": "Browser tool name conflict."
+  "providerConflict": "Browser tool name conflict.",
+  "agentSettingsLabel": "Allow agents to use the workspace browser",
+  "agentSettingsDescription": "Controls browser tool availability for this profile. Each Session still needs separate authorization in its browser toolbar. Turning this off revokes all existing Session access without closing the browser.",
+  "agentSettingsSave": "Save",
+  "agentSettingsSaving": "Saving…",
+  "agentSettingsLoading": "Loading browser settings…",
+  "agentSettingsUnavailable": "Browser settings are not available.",
+  "agentSettingsReadOnly": "This setting is read-only.",
+  "agentSettingsChanged": "The setting changed elsewhere. Select the switch again to make a new change.",
+  "agentSettingsNotSaved": "The change was not saved. Check the current value and try again."
 }

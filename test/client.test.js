@@ -17,6 +17,7 @@ function mount(Component) {
   return {
     React: {
       createElement, Fragment: Symbol('fragment'),
+      useSyncExternalStore(_subscribe, getSnapshot) { return getSnapshot(); },
       useRef(initial) { const index = cursor++; return cells[index] ??= { current: initial }; },
       useState(initial) {
         const index = cursor++;
@@ -67,6 +68,7 @@ function installTab() {
   const { apply } = makeClient({ React: mounted.React, RFB: null });
   apply({
     effect: (mount) => mount(),
+    inject(services) { assert.deepEqual(services, ['configForms', 'slots']); },
     connection: { openWebSocket: (path) => `owned-host:${path}` },
     locale: { register() {}, bind: () => (key) => key },
     sidebarRightTabs: { register: (entry) => { definition = entry; } },
@@ -120,6 +122,130 @@ test('native guide registers only its right-sidebar tab and binds the current vi
   render('elsewhere', [a]);
   assert.equal(closed, 1);
   assert.equal(render('elsewhere', [a, b]), null);
+});
+
+function installSettings() {
+  let contribution;
+  let Component;
+  let snapshot = { status: 'ready', value: { agentEnabled: true }, writable: true, revision: 1 };
+  const writes = [];
+  const form = {
+    getSnapshot: () => snapshot,
+    subscribe: () => () => {},
+    async mutate(ops, revision) {
+      writes.push({ ops, revision });
+      snapshot = { ...snapshot, value: { agentEnabled: ops[0].value }, revision: revision + 1 };
+      return true;
+    },
+  };
+  const mounted = mount((props) => Component(props));
+  const { apply } = makeClient({ React: mounted.React, RFB: null });
+  const slots = {
+    inject: (_slot, register) => register(),
+    register(options, render) {
+      if (options.name !== 'plugins.bundle.config') return;
+      contribution = { options, render };
+      return () => { contribution = undefined; };
+    },
+  };
+  let namespaceAvailable;
+  let dispose;
+  apply({
+    effect: (setup) => setup(),
+    connection: {}, slots,
+    locale: { register() {}, bind: () => (key) => key },
+    sidebarRightTabs: { register() {} },
+    inject(services, attach) {
+      assert.deepEqual(services, ['configForms', 'slots']);
+      attach({
+        effect: (setup) => { dispose = setup(); }, slots,
+        configForms: {
+          get(entry) { assert.equal(entry, 'workspace-browser'); return form; },
+          whileServed(entries, register) {
+            assert.deepEqual(entries, ['workspace-browser']);
+            let unregister;
+            namespaceAvailable = () => { unregister = register(); };
+            return () => unregister?.();
+          },
+        },
+      });
+    },
+  });
+  const t = (key) => key;
+  return {
+    contribution: () => contribution,
+    serve: namespaceAvailable,
+    dispose: () => { mounted.dispose(); dispose(); },
+    writes, form,
+    update: (next) => { snapshot = { ...snapshot, ...next }; },
+    render() {
+      Component = contribution.render({ t, view: 'page' }).type;
+      const page = mounted.render({ t });
+      const toggle = find(page, (item) => item.props?.role === 'switch');
+      const save = find(page, (item) => item.type === 'button');
+      const status = find(page, (item) => item.props?.role === 'status');
+      return {
+        checked: toggle?.props.checked, readOnly: toggle?.props.disabled,
+        change: (checked) => toggle.props.onChange({ currentTarget: { checked } }),
+        canSave: !save.props.disabled, save: () => page.props.onSubmit({ preventDefault() {} }),
+        notice: status.children[0],
+      };
+    },
+  };
+}
+
+test('the workspace browser bundle form uses the served entry and only writes on Save', (t) => {
+  const settings = installSettings();
+  t.after(settings.dispose);
+  assert.equal(settings.contribution(), undefined);
+  settings.serve();
+  const { options, render } = settings.contribution();
+  assert.deepEqual(options, {
+    name: 'plugins.bundle.config', key: '@local/dsh-workspace-browser', locale: '@local/dsh-workspace-browser',
+  });
+  assert.equal(render({ view: 'summary' }), null);
+  const initial = settings.render();
+  assert.equal(initial.checked, true);
+  assert.equal(initial.canSave, false);
+  initial.change(false);
+  assert.deepEqual(settings.writes, []);
+  const draft = settings.render();
+  assert.equal(draft.checked, false);
+  assert.equal(draft.canSave, true);
+  return draft.save().then(() => {
+    assert.deepEqual(settings.writes, [{ ops: [{ op: 'set', path: ['agentEnabled'], value: false }], revision: 1 }]);
+    assert.equal(settings.render().checked, false);
+    assert.equal(settings.render().canSave, false);
+  });
+});
+
+test('the workspace browser bundle form rejects stale and read-only edits and recovers after failed saves', async (t) => {
+  const settings = installSettings();
+  t.after(settings.dispose);
+  settings.serve();
+  settings.update({ writable: false });
+  const readOnly = settings.render();
+  assert.equal(readOnly.readOnly, true);
+  assert.equal(readOnly.notice, 'agentSettingsReadOnly');
+  assert.equal(readOnly.canSave, false);
+  settings.update({ writable: true });
+  settings.render().change(false);
+  settings.update({ revision: 2 });
+  const stale = settings.render();
+  assert.equal(stale.checked, true);
+  assert.equal(stale.canSave, false);
+  assert.equal(stale.notice, 'agentSettingsChanged');
+  await stale.save();
+  assert.deepEqual(settings.writes, []);
+
+  for (const mutate of [async () => false, async () => { throw new Error('Disconnected'); }]) {
+    settings.form.mutate = mutate;
+    settings.render().change(false);
+    await settings.render().save();
+    assert.equal(settings.render().checked, true);
+    assert.equal(settings.render().canSave, false);
+    assert.equal(settings.render().notice, 'agentSettingsNotSaved');
+  }
 });
 
 function mountView(sessionId, tabSignal, overrides = {}) {

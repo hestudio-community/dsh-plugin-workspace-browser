@@ -39,5 +39,14 @@
   "reconnect": "重新连接",
   "requestFailed": "浏览器服务未能完成请求。",
   "agentAccess": "智能体访问权限",
-  "providerConflict": "浏览器工具名称冲突。"
+  "providerConflict": "浏览器工具名称冲突。",
+  "agentSettingsLabel": "允许智能体使用工作区浏览器",
+  "agentSettingsDescription": "控制当前配置档是否提供浏览器工具。每个会话仍需在浏览器工具栏单独授权。关闭后会撤销所有会话的现有授权，但不会关闭浏览器。",
+  "agentSettingsSave": "保存",
+  "agentSettingsSaving": "正在保存…",
+  "agentSettingsLoading": "正在加载浏览器设置…",
+  "agentSettingsUnavailable": "浏览器设置不可用。",
+  "agentSettingsReadOnly": "此设置为只读。",
+  "agentSettingsChanged": "此设置已在其他位置更新。如需修改，请重新操作开关。",
+  "agentSettingsNotSaved": "未能保存。请确认当前值后重试。"
 }
