@@ -3,23 +3,32 @@ import { createHash, randomUUID } from 'node:crypto';
 import { connect } from 'node:net';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROJECT_ID } from '../shared/identity.js';
 import { BrowserError, MAX_CHUNK, MAX_FRAME, validId } from '../shared/protocol.js';
 import { resolvePublicIPv4 } from './egress.js';
-import { createImagePreparer, IMAGE_PLATFORM } from './image.js';
+import { IMAGE_PLATFORM } from '../shared/runner-image.js';
+import { createRunnerEnvironment, environmentError } from './image.js';
 
 const DEFAULT_SECCOMP = fileURLToPath(new URL('./chromium-seccomp.json', import.meta.url));
 const LIMIT = 4 * 1024 * 1024;
 const BOOT_MS = 45_000;
 const COMMAND_MS = 15_000;
 const MAX_TUNNELS = 96;
-const INSTANCE_LABEL = 'dev.dsh.workspace-browser.instance';
+const PROJECT_LABEL = `dev.dsh.${PROJECT_ID}`;
+const INSTANCE_LABEL = `${PROJECT_LABEL}.instance`;
 const containerId = /^[a-f0-9]{64}$/;
 
 const runnerUnavailable = () => new BrowserError('runner_unavailable', 'The Chromium runner stopped.', 503);
 const startupFailure = code => new BrowserError(code, 'Chromium runner could not start.', 503);
 const startupCodes = new Set(['runner_start_failed', 'runner_isolation_failed', 'runner_display_failed', 'runner_profile_recovery_failed']);
-const dockerFailure = (phase, error) => startupFailure(error?.code === 'ENOENT' ? 'docker_cli_missing' :
-  phase === 'engine' ? 'docker_engine_unavailable' : phase === 'load' ? 'runner_image_load_failed' : 'runner_start_failed');
+function dockerFailure(phase, error, timedOut = false) {
+  if (error?.code === 'ENOENT') return environmentError('docker_cli_missing');
+  if (phase === 'cli') return environmentError('docker_cli_unavailable');
+  if (phase === 'engine') return environmentError('docker_engine_unavailable');
+  if (phase === 'image') return environmentError('runner_image_missing');
+  if (phase === 'build') return environmentError(timedOut ? 'runner_build_timeout' : 'runner_build_failed');
+  return startupFailure('runner_start_failed');
+}
 
 function decodeChunk(value) {
   if (typeof value !== 'string' || !value || value.length > Math.ceil(MAX_CHUNK / 3) * 4) return null;
@@ -32,13 +41,14 @@ function dockerCommand(config) {
   const executable = config.dockerExecutable || (windows
     ? join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'resources', 'bin', 'docker.exe')
     : '/usr/bin/docker');
-  if (!isAbsolute(executable)) throw new BrowserError('docker_config_invalid', 'The Docker CLI must use an absolute path.', 503);
   const seccomp = config.seccompProfile || DEFAULT_SECCOMP;
-  if (!isAbsolute(seccomp) || /[\r\n]/.test(seccomp)) {
-    throw new BrowserError('docker_config_invalid', 'The Docker seccomp profile must use a valid absolute path.', 503);
+  if ([executable, seccomp].some(path => !isAbsolute(path) || /[\0\r\n]/.test(path))) {
+    throw environmentError('docker_config_invalid');
   }
   const env = { ...process.env };
-  for (const key of Object.keys(env)) if (/^DOCKER_(HOST|CONTEXT|TLS|TLS_VERIFY|CERT_PATH)$/i.test(key)) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (/^(DOCKER_(HOST|CONTEXT|TLS|TLS_VERIFY|CERT_PATH)|BUILDX_BUILDER|BUILDKIT_HOST)$/i.test(key)) delete env[key];
+  }
   const endpoint = windows ? 'npipe:////./pipe/dockerDesktopLinuxEngine' : 'unix:///var/run/docker.sock';
   return { executable, endpoint, env, seccomp };
 }
@@ -53,24 +63,24 @@ function runDocker(docker, args, stdio) {
 function dockerQuery(docker, args, signal, phase) {
   return new Promise((resolve, reject) => {
     signal.throwIfAborted();
-    const limit = phase === 'load' ? 180_000 : 10_000;
+    const build = phase === 'build';
+    const limit = build ? 20 * 60_000 : 10_000;
     let child;
-    try { child = runDocker(docker, args, ['ignore', 'pipe', 'ignore']); }
+    try { child = runDocker(docker, args, ['ignore', build ? 'ignore' : 'pipe', 'ignore']); }
     catch (error) { reject(dockerFailure(phase, error)); return; }
     let output = '';
     let failure;
     const stop = error => { failure ??= error; child.kill(); };
     const cancel = () => stop(signal.reason);
-    const timer = setTimeout(() => stop(dockerFailure(phase)), limit);
+    const timer = setTimeout(() => stop(dockerFailure(phase, undefined, true)), limit);
     timer.unref?.();
     signal.addEventListener('abort', cancel, { once: true });
-    child.stdout.setEncoding('utf8');
-    child.stdout.on('data', chunk => {
-      if (phase === 'load') return;
+    child.stdout?.setEncoding('utf8');
+    child.stdout?.on('data', chunk => {
       if (output.length + chunk.length > 1024) stop(dockerFailure(phase));
       else output += chunk;
     });
-    child.stdout.on('error', () => stop(dockerFailure(phase)));
+    child.stdout?.on('error', () => stop(dockerFailure(phase)));
     child.on('error', error => { failure ??= dockerFailure(phase, error); });
     child.once('close', code => {
       clearTimeout(timer);
@@ -78,32 +88,36 @@ function dockerQuery(docker, args, signal, phase) {
       if (failure) reject(failure);
       else resolve({ code, output });
     });
+    if (signal.aborted) cancel();
   });
 }
 
-export function createRunnerLauncher(config, { spawnDocker = runDocker, queryDocker = dockerQuery, prepareImage = createImagePreparer } = {}) {
+export function createRunnerLauncher(config, { spawnDocker = runDocker, queryDocker = dockerQuery } = {}) {
   const admission = new AbortController();
-  const prepare = prepareImage((args, signal, phase) => queryDocker(dockerCommand(config), args, signal, phase));
+  const environment = createRunnerEnvironment({
+    configure: () => dockerCommand(config), command: queryDocker, signal: admission.signal,
+  });
   return {
+    environment,
     start(workspaceId, onExit) {
-      const docker = dockerCommand(config);
-      return createRunner(config, workspaceId, onExit, docker, prepare, admission.signal, spawnDocker, queryDocker);
+      return createRunner(config, workspaceId, onExit, environment, admission.signal, spawnDocker, queryDocker);
     },
     async close() {
       admission.abort(runnerUnavailable());
-      await prepare.drain();
+      await environment.drain();
     },
   };
 }
 
-function createRunner(config, workspaceId, onExit, docker, prepare, admissionSignal, spawnDocker, queryDocker) {
+function createRunner(config, workspaceId, onExit, environment, admissionSignal, spawnDocker, queryDocker) {
   const workspaceKey = createHash('sha256').update(config.profileNamespace || 'default').update('\0').update(workspaceId).digest('hex');
-  const volume = `dsh-browser-${workspaceKey}`;
+  const volume = `${PROJECT_ID}-${workspaceKey}`;
   const name = volume;
-  const generation = `dsh-browser-${randomUUID()}`;
+  const generation = `${PROJECT_ID}-${randomUUID()}`;
   const nameFilter = `name=^/${name}$`;
   const startup = new AbortController();
   const startupSignal = AbortSignal.any([admissionSignal, startup.signal]);
+  let docker;
   let child;
   let bootTimer;
 
@@ -268,8 +282,10 @@ function createRunner(config, workspaceId, onExit, docker, prepare, admissionSig
 
   void (async () => {
     try {
-      const image = await prepare.get(admissionSignal);
+      const prepared = await environment.resolveImage();
       startupSignal.throwIfAborted();
+      docker = prepared.docker;
+      const { image } = prepared;
       // Also detect active pre-upgrade containers, which used random names.
       const active = await queryDocker(docker, [
         'ps', '--filter', `volume=${volume}`, '--format', '{{.ID}}',
@@ -281,7 +297,7 @@ function createRunner(config, workspaceId, onExit, docker, prepare, admissionSig
         'run', '--rm', '--interactive', '--init', '--pull=never', '--network=none', `--platform=${IMAGE_PLATFORM}`,
         '--security-opt=no-new-privileges', `--security-opt=seccomp=${docker.seccomp}`,
         '--pids-limit=384', '--shm-size=256m', '--memory=2g',
-        '--name', name, '--label', 'dev.dsh.workspace-browser=1', '--label', `${INSTANCE_LABEL}=${generation}`,
+        '--name', name, '--label', `${PROJECT_LABEL}=1`, '--label', `${INSTANCE_LABEL}=${generation}`,
         '--mount', `type=volume,source=${volume},target=/profile`, image,
       ], ['pipe', 'pipe', 'ignore']);
       bootTimer = setTimeout(() => void stop(startupFailure('runner_start_timeout')), BOOT_MS);

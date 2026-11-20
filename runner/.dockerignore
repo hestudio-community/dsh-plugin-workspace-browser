@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!.dockerignore
+!automation.mjs
+!profile-recovery.mjs
+!protocol.mjs
+!proxy.mjs
+!runner.mjs
+!chromium.sh
+!openbox.xml

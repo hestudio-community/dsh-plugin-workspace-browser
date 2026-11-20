@@ -193,7 +193,7 @@ async function setup() {
     const [deskUid, deskGid] = await ids('dshdesk');
     await chown('/profile', browserUid, browserGid);
     await chmod('/profile', 0o700);
-    const runDirectory = await mkdtemp('/tmp/dsh-browser-');
+    const runDirectory = await mkdtemp('/tmp/dsh-plugin-workspace-browser-');
     await chown(runDirectory, deskUid, deskGid);
     await chmod(runDirectory, 0o700);
     const displayAuth = `${runDirectory}/Xauthority`;

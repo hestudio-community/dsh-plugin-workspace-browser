@@ -1,5 +1,7 @@
 FROM node:22-bookworm-slim
 
+LABEL dev.dsh.dsh-plugin-workspace-browser.runner-protocol="1"
+
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates chromium fonts-liberation gosu openbox \
@@ -14,5 +16,8 @@ WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --save-exact puppeteer-core@24.31.0
 COPY automation.mjs profile-recovery.mjs protocol.mjs proxy.mjs runner.mjs chromium.sh openbox.xml ./
 RUN sed -i 's/\r$//' ./chromium.sh && chmod 0755 ./chromium.sh
+
+ARG DSH_PLUGIN_VERSION
+LABEL dev.dsh.dsh-plugin-workspace-browser.plugin-version="${DSH_PLUGIN_VERSION}"
 
 ENTRYPOINT ["node", "/app/runner.mjs"]

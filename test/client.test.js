@@ -112,7 +112,8 @@ function installTab() {
 test('native guide registers only its right-sidebar tab and binds the current visible Session', () => {
   const { slots, definition, body } = installTab();
   assert.deepEqual(slots, ['sidebar.right.pane.tab']);
-  assert.equal(definition.kind, 'workspace-browser');
+  assert.equal(definition.id, 'dsh-plugin-workspace-browser');
+  assert.equal(definition.kind, 'dsh-plugin-workspace-browser');
   assert.equal(definition.keepMounted, true);
   assert.equal(definition.guide[0].title(), 'open');
   assert.equal(definition.guide[0].description, undefined);
@@ -187,9 +188,9 @@ function installSettings() {
       attach({
         effect: (setup) => { disposers.push(setup()); }, slots,
         configForms: {
-          get(entry) { assert.equal(entry, 'workspace-browser'); return form; },
+          get(entry) { assert.equal(entry, 'dsh-plugin-workspace-browser'); return form; },
           whileServed(entries, register) {
-            assert.deepEqual(entries, ['workspace-browser']);
+            assert.deepEqual(entries, ['dsh-plugin-workspace-browser']);
             let unregister;
             namespaceAvailable = () => { unregister = register(); };
             return () => unregister?.();
@@ -199,6 +200,15 @@ function installSettings() {
     },
   });
   const t = (key) => key;
+  function renderSection(index, beforeCommit) {
+    const page = contribution.render({ t, view: 'page' });
+    assert.equal(page.type, 'div');
+    assert.equal(page.children.length, 3);
+    assert.equal(page.children[0].type, 'style');
+    const entry = page.children[index + 1];
+    Component = entry.type;
+    return mounted.render(entry.props, beforeCommit);
+  }
   return {
     contribution: () => contribution,
     serve: namespaceAvailable,
@@ -206,10 +216,9 @@ function installSettings() {
     unmount: mounted.dispose,
     writes, form,
     update: (next) => { snapshot = { ...snapshot, ...next }; },
+    renderEnvironment: (beforeCommit) => renderSection(1, beforeCommit),
     render() {
-      const entry = contribution.render({ t, view: 'page' });
-      Component = entry.type;
-      const page = mounted.render(entry.props);
+      const page = renderSection(0);
       assert.equal(find(page, (item) => item.type === 'contextMenu.button'), undefined);
       const control = switchProps(page);
       const description = find(page, (item) => item.children.includes('agentSettingsDescription'));
@@ -229,7 +238,7 @@ test('the served bundle settings expose a direct Switch backed by the DSH config
   settings.serve();
   const { options, render } = settings.contribution();
   assert.deepEqual(options, {
-    name: 'plugins.bundle.config', key: '@local/dsh-workspace-browser', locale: '@local/dsh-workspace-browser',
+    name: 'plugins.bundle.config', key: 'dsh-plugin-workspace-browser', locale: 'dsh-plugin-workspace-browser',
   });
   assert.equal(render({ view: 'summary' }), null);
   const initial = settings.render();
@@ -248,6 +257,7 @@ test('the served bundle settings expose a direct Switch backed by the DSH config
   assert.equal(settings.writes.length, 1);
   for (const locale of ['en', 'zh']) {
     const messages = JSON.parse(readFileSync(new URL(`../locale/${locale}.json`, import.meta.url), 'utf8'));
+    assert.equal(messages.meta.title, 'dsh-plugin-workspace-browser');
     for (const key of ['agentSettingsHeading', 'agentSettingsDescription', 'sessionAgentAccess']) {
       assert.ok(messages[key]);
     }
@@ -303,7 +313,7 @@ function mountView(sessionId, tabSignal, overrides = {}) {
   let view;
   const hooks = mount((props) => view(props));
   const menus = fakeMenus();
-  const menu = makeNativeMenu(hooks.React, '@local/dsh-workspace-browser:browser');
+  const menu = makeNativeMenu(hooks.React, 'dsh-plugin-workspace-browser:browser');
   menu.attach(menus);
   view = makeBrowserView(hooks.React, overrides.RFB, menu);
   const render = () => {
@@ -438,7 +448,7 @@ test('a retired view aborts its request and ignores a late ticket after switchin
   assert.equal(next.status(), 'runnerIsolationFailed');
 });
 
-test('profile startup failures use distinct localized messages', async (t) => {
+test('profile and environment startup failures use distinct localized messages', async (t) => {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document');
   Object.defineProperty(globalThis, 'document', {
     configurable: true, value: { createElement: () => ({ style: {}, remove() {} }) },
@@ -456,6 +466,17 @@ test('profile startup failures use distinct localized messages', async (t) => {
     ['runner_profile_recovery_failed', 'runnerProfileRecoveryFailed'],
     ['runner_start_failed', 'runnerStartFailed'],
     ['runner_isolation_failed', 'runnerIsolationFailed'],
+    ['docker_config_invalid', 'dockerConfigInvalid'],
+    ['docker_cli_missing', 'dockerCliMissing'],
+    ['docker_cli_unavailable', 'dockerCliUnavailable'],
+    ['docker_engine_unavailable', 'dockerEngineUnavailable'],
+    ['docker_engine_incompatible', 'dockerEngineIncompatible'],
+    ['runner_image_missing', 'runnerImageMissing'],
+    ['runner_image_incompatible', 'runnerImageIncompatible'],
+    ['runner_build_inputs_missing', 'runnerBuildInputsMissing'],
+    ['runner_build_failed', 'runnerBuildFailed'],
+    ['runner_build_timeout', 'runnerBuildTimeout'],
+    ['runner_build_image_invalid', 'runnerBuildImageInvalid'],
   ];
   for (const [code, key] of cases) {
     responseCode = code;
@@ -475,6 +496,155 @@ test('profile startup failures use distinct localized messages', async (t) => {
 function response(data) {
   return { ok: data.ok !== false, json: async () => ({ ok: true, ...data }) };
 }
+
+const envResponse = (data) => response({ runnerVersion: '2026.11-test', ...data });
+
+function mountEnvironment(t) {
+  const settings = installSettings();
+  settings.serve();
+  t.after(settings.dispose);
+  const render = settings.renderEnvironment;
+  const byLabel = (label) => find(render(), (node) => node.children.includes(label));
+  return {
+    render, unmount: settings.unmount, byLabel,
+    check: () => (byLabel('environmentRecheckButton') ?? byLabel('environmentCheckButton')).props,
+    build: () => (byLabel('environmentBuildButton') ?? byLabel('environmentRebuildButton')
+      ?? byLabel('environmentRetryBuildButton'))?.props,
+  };
+}
+
+test('environment settings check manually and only build for a missing or incompatible image', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const requests = [];
+  const statusPath = '/environment/build/status';
+  const checkPath = '/environment/check';
+  const buildPath = '/environment/build';
+  let status = 'idle';
+  let prereqsReady = false;
+  let imageError = 'runner_image_missing';
+  t.mock.method(globalThis, 'fetch', async (url, { body, method }) => {
+    const path = url.slice(API.length);
+    assert.equal(method, 'POST');
+    assert.deepEqual(JSON.parse(body), {});
+    requests.push(path);
+    if (path === statusPath) return envResponse({ state: status });
+    if (path === buildPath) return envResponse({ state: 'building' });
+    assert.equal(path, checkPath);
+    return envResponse({ checks: [
+      { id: 'dockerConfig', status: 'pass' },
+      prereqsReady ? { id: 'dockerCli', status: 'pass' }
+        : { id: 'dockerCli', status: 'fail', code: 'docker_cli_unavailable' },
+      { id: 'dockerEngine', status: prereqsReady ? 'pass' : 'skipped' },
+      { id: 'runnerImage', status: prereqsReady ? (imageError ? 'fail' : 'pass') : 'skipped', code: imageError },
+    ] });
+  });
+
+  const env = mountEnvironment(t);
+  assert.equal(env.build(), undefined);
+  assert.equal(env.check()['aria-disabled'], true);
+  await flush();
+  assert.equal(env.byLabel('2026.11-test').type, 'code');
+  assert.equal(env.check()['aria-disabled'], undefined);
+  t.mock.timers.tick(4000);
+  assert.deepEqual(requests, [statusPath]);
+
+  await env.check().onClick();
+  assert.ok(env.byLabel('environmentCheckSkipped'));
+  assert.ok(env.byLabel('dockerCliUnavailable'));
+  assert.equal(env.build(), undefined);
+  prereqsReady = true;
+  imageError = undefined;
+  await env.check().onClick();
+  assert.ok(env.byLabel('environmentReady'));
+  assert.equal(env.build(), undefined);
+  imageError = 'runner_image_incompatible';
+  await env.check().onClick();
+  assert.ok(env.byLabel('environmentRebuildButton'));
+  imageError = 'runner_image_missing';
+  await env.check().onClick();
+  const build = env.byLabel('environmentBuildButton').props;
+  assert.equal(build['aria-describedby'], env.byLabel('environmentBuildHelp').props.id);
+
+  const pending = build.onClick();
+  await build.onClick();
+  await pending;
+  assert.ok(env.byLabel('environmentBuilding'));
+  assert.equal(env.build()['aria-disabled'], true);
+  assert.deepEqual(requests, [statusPath, checkPath, checkPath, checkPath, checkPath, buildPath]);
+  t.mock.timers.tick(1999);
+  assert.equal(requests.length, 6);
+  status = 'building';
+  t.mock.timers.tick(1);
+  await flush();
+  assert.deepEqual(requests, [statusPath, checkPath, checkPath, buildPath, statusPath]);
+  status = 'succeeded';
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.deepEqual(requests, [statusPath, checkPath, checkPath, buildPath, statusPath, statusPath, checkPath]);
+  assert.ok(env.byLabel('environmentBuildSucceeded'));
+  assert.ok(env.byLabel('environmentCheckPass'));
+  assert.equal(env.build().disabled, false);
+  t.mock.timers.tick(4000);
+  assert.equal(requests.length, 7);
+});
+
+test('environment settings resume an existing build, show failure, and do not check or poll after failure', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let polls = 0;
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    assert.equal(url, `${API}/environment/build/status`);
+    if (++polls === 1) return response({ state: 'building' });
+    if (polls === 2) throw new TypeError('Network error');
+    return response({ state: 'failed', code: 'runner_build_timeout' });
+  });
+  const env = mountEnvironment(t);
+  env.render();
+  await flush();
+  assert.ok(env.byLabel('environmentBuilding'));
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.ok(env.byLabel('environmentBuildStatusError'));
+  assert.equal(env.build().disabled, true);
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(env.byLabel('runnerBuildTimeout').props.role, 'alert');
+  assert.equal(env.byLabel('environmentBuilding'), undefined);
+  assert.equal(env.build().disabled, false);
+  t.mock.timers.tick(4000);
+  assert.equal(polls, 3);
+});
+
+test('unmounting environment settings cancels timers and ignores an in-flight status response', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = [];
+  t.mock.method(globalThis, 'fetch', (url, { signal }) => new Promise((resolve) => {
+    assert.equal(url, `${API}/environment/build/status`);
+    pending.push({ resolve, signal });
+  }));
+
+  const waiting = mountEnvironment(t);
+  waiting.render();
+  pending[0].resolve(response({ state: 'building' }));
+  await flush();
+  waiting.unmount();
+  t.mock.timers.tick(2000);
+  assert.equal(pending.length, 1);
+
+  const polling = mountEnvironment(t);
+  polling.render();
+  pending[1].resolve(response({ state: 'building' }));
+  await flush();
+  t.mock.timers.tick(2000);
+  assert.equal(pending[2].signal.aborted, false);
+  t.mock.timers.tick(4000);
+  assert.equal(pending.length, 3);
+  polling.unmount();
+  assert.equal(pending[2].signal.aborted, true);
+  pending[2].resolve(response({ state: 'succeeded' }));
+  await flush();
+  t.mock.timers.tick(4000);
+  assert.equal(pending.length, 3);
+});
 
 function fakeDisplays(t) {
   const sockets = [];
@@ -851,7 +1021,7 @@ test('changing Sessions ignores a late mutation and never shows another Sessionâ
   const menus = fakeMenus();
   let view;
   const hooks = mount((props) => view(props));
-  const menu = makeNativeMenu(hooks.React, '@local/dsh-workspace-browser:browser');
+  const menu = makeNativeMenu(hooks.React, 'dsh-plugin-workspace-browser:browser');
   menu.attach(menus);
   view = makeBrowserView(hooks.React, null, menu);
   t.after(hooks.dispose);

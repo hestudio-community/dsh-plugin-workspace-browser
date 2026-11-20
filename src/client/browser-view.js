@@ -1,5 +1,5 @@
 import { makeUseAgentAccess } from './agent-access.js';
-import { admissionMessage, post } from './http.js';
+import { admissionMessage, environmentMessage, post } from './http.js';
 import { createStreamChannel } from './stream.js';
 import { accessErrors, bar, fill, overlay, viewport } from './styles.js';
 import { renderSwitch } from './switch.js';
@@ -12,9 +12,6 @@ const requestMessages = new Map([
   ['session_workspace_missing', 'sessionWorkspaceMissing'],
   ['session_workspace_changed', 'sessionWorkspaceChanged'],
   ['runner_unavailable', 'runnerUnavailable'],
-  ['docker_cli_missing', 'dockerCliMissing'],
-  ['docker_config_invalid', 'dockerConfigInvalid'],
-  ['docker_engine_unavailable', 'dockerEngineUnavailable'],
   ['runner_bundle_invalid', 'runnerBundleInvalid'],
   ['runner_image_load_failed', 'runnerImageLoadFailed'],
   ['runner_isolation_failed', 'runnerIsolationFailed'],
@@ -29,7 +26,7 @@ const requestMessages = new Map([
   ['browser_busy', 'browserBusy'],
   ['browser_generation_changed', 'browserGenerationChanged'],
 ]);
-const message = (code) => admissionMessage(code) ?? requestMessages.get(code) ?? 'requestFailed';
+const message = (code) => admissionMessage(code) ?? environmentMessage(code) ?? requestMessages.get(code) ?? 'requestFailed';
 const token = (value) => typeof value === 'string' && value.length > 0;
 
 // The panel's logical run outlives a visible display. Status is authoritative;

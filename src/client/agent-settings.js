@@ -1,7 +1,5 @@
 import { renderSwitch } from './switch.js';
-
-const row = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 };
-const detail = { margin: '4px 0 0', color: 'var(--dsw-alias-label-secondary, CanvasText)', overflowWrap: 'anywhere' };
+import { settings } from './settings-styles.js';
 
 function isReady(snapshot) {
   return snapshot.status === 'ready' && typeof snapshot.value?.agentEnabled === 'boolean';
@@ -62,15 +60,15 @@ export function makeAgentSettings(React, form) {
     }
 
     const label = t('agentSettingsLabel');
-    return h('section', { 'aria-label': t('agentSettingsHeading'), style: { marginBlock: 16 } },
-      h('h2', { style: { margin: '0 0 8px', font: 'inherit', fontWeight: 600 } }, t('agentSettingsHeading')),
-      h('div', { style: { ...row, paddingBlock: 12, borderBlock: '1px solid var(--dsw-alias-border-l1, GrayText)' } },
-        h('div', { style: { minWidth: 0 } },
-          h('label', { htmlFor: switchId, style: { fontWeight: 500, overflowWrap: 'anywhere' } }, label),
-          h('p', { id: descriptionId, style: detail }, t('agentSettingsDescription'))),
+    return h('section', { 'aria-label': t('agentSettingsHeading'), className: settings.section },
+      h('h2', { className: settings.heading }, t('agentSettingsHeading')),
+      h('div', { className: settings.row },
+        h('div', { className: settings.copy },
+          h('label', { htmlFor: switchId }, label),
+          h('p', { id: descriptionId, className: settings.detail }, t('agentSettingsDescription')),
+          h('div', { role: 'status', className: settings.status }, notice ? t(notice) : null)),
         renderSwitch(h, {
           id: switchId, descriptionId, checked: value === true, disabled: !writable, busy, onChange: setEnabled,
-        })),
-      h('div', { role: 'status', style: notice ? detail : undefined }, notice ? t(notice) : null));
+        })));
   };
 }

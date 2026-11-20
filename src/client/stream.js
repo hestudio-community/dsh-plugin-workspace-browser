@@ -1,3 +1,4 @@
+import { PROJECT_ID } from '../shared/identity.js';
 import { API, RESIZE_OWNER } from '../shared/protocol.js';
 
 // noVNC attaches to a WebSocket-shaped raw channel. Its open handler
@@ -6,7 +7,7 @@ export function createStreamChannel(ticket, openWebSocket, setResizeOwner = () =
   const socket = openWebSocket(`${API}/stream`);
   if (!('binaryType' in socket)) {
     socket.close();
-    throw new Error('Workspace Browser requires a binary WebSocket');
+    throw new Error(`${PROJECT_ID} requires a binary WebSocket`);
   }
   let bootstrapSent = false;
   let closing = false;

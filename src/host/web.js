@@ -1,4 +1,5 @@
 import { WebSocketServer } from 'ws';
+import { PROJECT_ID } from '../shared/identity.js';
 import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER, validId } from '../shared/protocol.js';
 
 const WS_LIMIT = 1024 * 1024;
@@ -10,6 +11,7 @@ const methods = {
   '/view': [sessionFields, controlFields],
   '/browser/status': [['sessionId', 'runId']], '/browser/restart': [controlFields], '/browser/close': [controlFields],
   '/agent/status': [sessionFields], '/agent/grant': [sessionFields], '/agent/revoke': [sessionFields],
+  '/environment/check': [[]], '/environment/build': [[]], '/environment/build/status': [[]],
 };
 
 function localOrigin(req) {
@@ -37,7 +39,7 @@ function admit(connection, req, allowDesktopPost = false) {
   const desktopPost = allowDesktopPost && origin === undefined && req.headers['sec-fetch-site'] === undefined &&
     req.method === 'POST' && req.headers[DESKTOP_REQUEST_HEADER] === DESKTOP_REQUEST_VERSION && isJsonRequest(req);
   if (!expected || (origin !== expected && !desktopPost)) {
-    throw new BrowserError('origin_denied', 'Open Workspace Browser from local DSH Web or the main DSH Desktop window.', 403);
+    throw new BrowserError('origin_denied', `Open ${PROJECT_ID} from local DSH Web or the main DSH Desktop window.`, 403);
   }
   const admission = connection.admit({ headers: req.headers });
   if ('rejection' in admission || admission.peer.id !== connection.browserPeer.id || admission.peer.principal.kind !== 'owner') {
@@ -83,7 +85,7 @@ function rejectUpgrade(socket, status) {
   socket.end(`HTTP/1.1 ${status} ${name}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
-export function registerWeb(ctx, pool, agent) {
+export function registerWeb(ctx, pool, agent, environment) {
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: WS_LIMIT, perMessageDeflate: false, clientTracking: false });
   const connections = new Set();
   const disposers = [];
@@ -109,12 +111,15 @@ export function registerWeb(ctx, pool, agent) {
         case '/agent/status': result = agent.status(sessionId); break;
         case '/agent/grant': result = agent.grant(sessionId); break;
         case '/agent/revoke': result = agent.revoke(sessionId); break;
+        case '/environment/check': result = await environment.check(); break;
+        case '/environment/build': result = environment.startBuild(); break;
+        case '/environment/build/status': result = environment.buildStatus(); break;
       }
       respond(res, 200, { ok: true, ...result });
     } catch (error) {
       if (error instanceof BrowserError) respond(res, error.status, { ok: false, code: error.code, message: error.message });
       else {
-        ctx.logger?.warn('Workspace Browser: unexpected failure handling %s', path);
+        ctx.logger?.warn(`${PROJECT_ID}: unexpected failure handling %s`, path);
         respond(res, 500, { ok: false, code: 'internal_error', message: 'The workspace browser could not complete the request.' });
       }
     }

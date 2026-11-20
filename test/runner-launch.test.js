@@ -4,11 +4,13 @@ import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { createRunnerLauncher } from '../src/host/runner.js';
+import { IMAGE_PLATFORM, RUNNER_IMAGE, RUNNER_PROTOCOL, RUNNER_VERSION } from '../src/shared/runner-image.js';
 
-const key = id => `dsh-browser-${createHash('sha256').update('default\0' + id).digest('hex')}`;
-const label = 'dev.dsh.workspace-browser.instance';
+const key = id => `dsh-plugin-workspace-browser-${createHash('sha256').update('default\0' + id).digest('hex')}`;
+const label = 'dev.dsh.dsh-plugin-workspace-browser.instance';
+const imageId = `sha256:${'a'.repeat(64)}`;
 
-function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' }, invalidCleanup = false } = {}) {
+function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' }, invalidCleanup = false, imageMissing = false } = {}) {
   const containers = new Map(active.map(row => [row.name, row]));
   const launches = [];
   const stops = [];
@@ -16,6 +18,12 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
   const result = (output = '', code = 0) => ({ output, code });
   async function queryDocker(_docker, args, signal) {
     signal.throwIfAborted();
+    if (args[0] === '--version') return result('Docker version 29.0.0');
+    if (args[0] === 'version') return result(IMAGE_PLATFORM);
+    if (args[0] === 'image') {
+      assert.equal(args.at(-1), RUNNER_IMAGE);
+      return imageMissing ? result('', 1) : result(`${imageId} ${IMAGE_PLATFORM} ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`);
+    }
     if (args[0] === 'stop') {
       const id = args.at(-1);
       assert.match(id, /^[0-9a-f]{64}$/);
@@ -68,10 +76,7 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
     }
     return child;
   }
-  const launcher = () => createRunnerLauncher({}, {
-    queryDocker, spawnDocker,
-    prepareImage: () => ({ get: async () => `sha256:${'a'.repeat(64)}`, drain: async () => {} }),
-  });
+  const launcher = () => createRunnerLauncher({}, { queryDocker, spawnDocker });
   return { containers, launcher, launches, probes, stops };
 }
 
@@ -82,6 +87,7 @@ test('two Hosts racing for one profile do not start or stop a second container',
   const first = start(engine.launcher(), 'shared');
   const second = start(engine.launcher(), 'shared');
   assert.notEqual(first.generation, second.generation);
+  assert.match(first.generation, /^dsh-plugin-workspace-browser-[\da-f-]+$/);
   try {
     await Promise.all([first.ready, assert.rejects(second.ready, { code: 'runner_profile_in_use', status: 503 })]);
     await second.stop();
@@ -99,7 +105,7 @@ test('two Hosts racing for one profile do not start or stop a second container',
   }
 });
 
-test('an active old runner or a failed Docker volume query blocks startup', async () => {
+test('an active container using the same volume or a failed Docker volume query blocks startup', async () => {
   const old = fakeEngine({ active: [{ name: 'old-random-name', volume: key('old'), id: 'b'.repeat(64) }] });
   const failed = fakeEngine({ preflightCode: 1 });
   await assert.rejects(start(old.launcher(), 'old').ready, { code: 'runner_profile_in_use' });
@@ -107,6 +113,29 @@ test('an active old runner or a failed Docker volume query blocks startup', asyn
   assert.deepEqual(old.launches, []);
   assert.deepEqual(failed.launches, []);
   assert.deepEqual(old.stops, []);
+});
+
+test('opening Chromium without an installed image never creates a container or starts a build', async () => {
+  const engine = fakeEngine({ imageMissing: true });
+  await assert.rejects(start(engine.launcher(), 'missing-image').ready, { code: 'runner_image_missing' });
+  assert.deepEqual(engine.launches, []);
+  assert.deepEqual(engine.probes, []);
+});
+
+test('the renamed runner does not use or stop a legacy profile container', async () => {
+  const legacyName = `dsh-browser-${key('shared').slice(-64)}`;
+  const legacy = { name: legacyName, volume: legacyName, id: 'b'.repeat(64) };
+  const engine = fakeEngine({ active: [legacy] });
+  const runner = start(engine.launcher(), 'shared');
+  try {
+    await runner.ready;
+    assert.deepEqual(engine.probes, [`volume=${key('shared')}`]);
+    assert.equal(engine.launches[0].volume, key('shared'));
+  } finally {
+    await runner.stop();
+  }
+  assert.equal(engine.containers.get(legacyName), legacy);
+  assert.ok(!engine.stops.includes(legacy.id));
 });
 
 test('separate profile volumes run independently with unchanged Docker sandbox flags', async () => {
@@ -118,7 +147,10 @@ test('separate profile volumes run independently with unchanged Docker sandbox f
     await Promise.all([first.ready, second.ready]);
     assert.notEqual(engine.launches[0].name, engine.launches[1].name);
     for (const { args } of engine.launches) {
+      assert.ok(args.includes('dev.dsh.dsh-plugin-workspace-browser=1'));
       assert.ok(args.includes('--network=none'));
+      assert.ok(args.includes('--pull=never'));
+      assert.equal(args.at(-1), imageId);
       assert.ok(args.includes('--security-opt=no-new-privileges'));
       assert.ok(args.some(arg => arg.startsWith('--security-opt=seccomp=')));
     }

@@ -2,16 +2,18 @@ import en from '../../locale/en.json' with { type: 'json' };
 import zh from '../../locale/zh.json' with { type: 'json' };
 import { makeAgentSettings } from './agent-settings.js';
 import { makeBrowserView } from './browser-view.js';
+import { makeEnvironmentSettings } from './environment-settings.js';
 import { makeNativeMenu } from './native-menu.js';
+import { renderSettingsStyles, settings } from './settings-styles.js';
 import { panelStyle } from './styles.js';
+import { PROJECT_ID } from '../shared/identity.js';
 
-const NS = '@local/dsh-workspace-browser';
 const selectSnapshot = (snapshot) => snapshot;
 const dictionary = ({ meta, ...labels }) => ({ ...labels, title: meta.title });
 
 export function makeClient({ React, RFB }) {
   const { createElement: h, useLayoutEffect, useRef } = React;
-  const browserMenu = makeNativeMenu(React, `${NS}:browser`);
+  const browserMenu = makeNativeMenu(React, `${PROJECT_ID}:browser`);
   const BrowserView = makeBrowserView(React, RFB, browserMenu);
 
   function BrowserTab({ sessionId, useTabInfo, useWorkspaces, t, openWebSocket, renderFactorySlot }) {
@@ -46,29 +48,30 @@ export function makeClient({ React, RFB }) {
   }
 
   function apply(ctx) {
-    ctx.effect(() => ctx.locale.register(NS, { en: dictionary(en), zh: dictionary(zh) }), 'Workspace Browser: locale');
-    const t = ctx.locale.bind(NS);
-    ctx.effect(() => browserMenu.attach(ctx.contextMenus), 'Workspace Browser: browser menu');
+    ctx.effect(() => ctx.locale.register(PROJECT_ID, { en: dictionary(en), zh: dictionary(zh) }), `${PROJECT_ID}: locale`);
+    const t = ctx.locale.bind(PROJECT_ID);
+    ctx.effect(() => browserMenu.attach(ctx.contextMenus), `${PROJECT_ID}: browser menu`);
     ctx.effect(() => ctx.sidebarRightTabs.register({
-      id: NS,
-      kind: 'workspace-browser',
+      id: PROJECT_ID,
+      kind: PROJECT_ID,
       keepMounted: true,
       title: () => t('title'),
       guide: [{ id: 'open', order: 31, title: () => t('open') }],
-    }), 'Workspace Browser: sidebar tab');
+    }), `${PROJECT_ID}: sidebar tab`);
     const openWebSocket = (path) => ctx.connection.openWebSocket(path);
     ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
-      name: 'sidebar.right.pane.tab', key: NS, locale: NS,
-    }, (props) => BrowserTab({ ...props, openWebSocket }))), 'Workspace Browser: tab body');
+      name: 'sidebar.right.pane.tab', key: PROJECT_ID, locale: PROJECT_ID,
+    }, (props) => BrowserTab({ ...props, openWebSocket }))), `${PROJECT_ID}: tab body`);
 
     ctx.inject(['configForms', 'slots'], (settingsCtx) => {
       const { configForms, slots } = settingsCtx;
-      const entry = 'workspace-browser';
-      const AgentSettings = makeAgentSettings(React, configForms.get(entry));
-      settingsCtx.effect(() => configForms.whileServed([entry], () => slots.inject('plugins.bundle.config', () => slots.register({
-        name: 'plugins.bundle.config', key: NS, locale: NS,
-      }, ({ t, view }) => view === 'page' ? h(AgentSettings, { t }) : null))),
-      'Workspace Browser: plugin settings');
+      const AgentSettings = makeAgentSettings(React, configForms.get(PROJECT_ID));
+      const EnvironmentSettings = makeEnvironmentSettings(React);
+      settingsCtx.effect(() => configForms.whileServed([PROJECT_ID], () => slots.inject('plugins.bundle.config', () => slots.register({
+        name: 'plugins.bundle.config', key: PROJECT_ID, locale: PROJECT_ID,
+      }, ({ t, view }) => view === 'page' ? h('div', { className: settings.page },
+        renderSettingsStyles(h), h(AgentSettings, { t }), h(EnvironmentSettings, { t })) : null))),
+      `${PROJECT_ID}: plugin settings`);
     });
   }
 

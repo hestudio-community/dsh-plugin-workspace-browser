@@ -7,8 +7,8 @@ const MAX_INSTANCES = 4;
 const MAX_TICKETS = 32;
 const MAX_VIEWS = 4;
 const startupCodes = new Set([
-  'docker_cli_missing', 'docker_config_invalid', 'docker_engine_unavailable', 'runner_bundle_invalid',
-  'runner_image_load_failed', 'runner_start_failed', 'runner_start_timeout', 'runner_isolation_failed',
+  'docker_cli_missing', 'docker_cli_unavailable', 'docker_config_invalid', 'docker_engine_unavailable', 'docker_engine_incompatible',
+  'runner_image_missing', 'runner_image_incompatible', 'runner_start_failed', 'runner_start_timeout', 'runner_isolation_failed',
   'runner_display_failed', 'runner_profile_recovery_failed', 'runner_profile_in_use', 'runner_unavailable',
 ]);
 

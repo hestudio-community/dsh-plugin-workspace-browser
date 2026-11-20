@@ -1,4 +1,4 @@
 - insert:
-    - id: workspace-browser
-      name: '@local/dsh-workspace-browser'
+    - id: dsh-plugin-workspace-browser
+      name: dsh-plugin-workspace-browser
       config: {}

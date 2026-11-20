@@ -1,5 +1,7 @@
-export const API = '/dsh-browser/v2';
-export const DESKTOP_REQUEST_HEADER = 'x-dsh-workspace-browser-desktop';
+import { PROJECT_ID } from './identity.js';
+
+export const API = `/${PROJECT_ID}/v2`;
+export const DESKTOP_REQUEST_HEADER = `x-${PROJECT_ID}-desktop`;
 export const DESKTOP_REQUEST_VERSION = '1';
 export const RESIZE_OWNER = 'resize-owner';
 export const MAX_FRAME = 256 * 1024;

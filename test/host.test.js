@@ -136,6 +136,9 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   let upgrade;
   let issued = 0;
   let admitted = 0;
+  const environmentCalls = [];
+  const runnerVersion = '0.1.3';
+  const checks = ['dockerConfig', 'dockerCli', 'dockerEngine', 'runnerImage'].map(id => ({ id, status: 'pass' }));
   const dispose = registerWeb({
     connection: {
       browserPeer: owner,
@@ -171,9 +174,23 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
       assert.equal(sessionId, 'blank');
       return { provider: 'enabled', canGrant: true, access: null };
     },
+  }, {
+    async check() {
+      environmentCalls.push('check');
+      return { runnerVersion, checks };
+    },
+    startBuild() {
+      environmentCalls.push('build');
+      return { runnerVersion, state: 'building' };
+    },
+    buildStatus() {
+      environmentCalls.push('status');
+      return { runnerVersion, state: 'idle' };
+    },
   });
   t.after(dispose);
 
+  assert.equal(DESKTOP_REQUEST_HEADER, 'x-dsh-plugin-workspace-browser-desktop');
   const desktop = { host: '127.0.0.1:4321', 'content-type': 'application/json',
     [DESKTOP_REQUEST_HEADER]: DESKTOP_REQUEST_VERSION, cookie: 'owner' };
   const request = async ({ headers = {}, remoteAddress = '127.0.0.1', method = 'POST', path = '/view', value = { sessionId: 'blank' } } = {}) => {
@@ -191,6 +208,7 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   for (const variant of [
     { headers: { [DESKTOP_REQUEST_HEADER]: undefined } },
     { headers: { [DESKTOP_REQUEST_HEADER]: '2' } },
+    { headers: { [DESKTOP_REQUEST_HEADER]: undefined, 'x-dsh-workspace-browser-desktop': '1' } },
     { headers: { origin: 'null' } },
     { headers: { origin: 'https://example.com' } },
     { headers: { origin: 'http://127.0.0.1:4322' } },
@@ -234,6 +252,35 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   assert.equal(routes.has(`${API}/agent/decision`), false);
   assert.deepEqual((await request({ headers: { origin: 'http://127.0.0.1:4321',
     [DESKTOP_REQUEST_HEADER]: undefined, 'sec-fetch-site': 'same-origin' } })).body, expectedView);
+  assert.equal(issued, 2);
+
+  const web = { origin: 'http://127.0.0.1:4321', [DESKTOP_REQUEST_HEADER]: undefined, 'sec-fetch-site': 'same-origin' };
+  for (const [path, expected] of [
+    ['/environment/check', { ok: true, runnerVersion, checks }],
+    ['/environment/build/status', { ok: true, runnerVersion, state: 'idle' }],
+    ['/environment/build', { ok: true, runnerVersion, state: 'building' }],
+  ]) {
+    for (const [headers, status, code] of [
+      [{ ...web, origin: 'https://example.com' }, 403, 'origin_denied'],
+      [{ [DESKTOP_REQUEST_HEADER]: undefined }, 403, 'origin_denied'],
+      [{ ...web, cookie: undefined }, 401, 'access_denied'],
+      [{ cookie: 'guest' }, 403, 'access_denied'],
+      [{ cookie: 'other' }, 403, 'access_denied'],
+    ]) {
+      const reply = await request({ path, headers, value: {} });
+      assert.equal(reply.status, status);
+      assert.equal(reply.body.code, code);
+    }
+    for (const value of [{ sessionId: 'blank' }, { runnerVersion }, { dockerfile: '/tmp/Dockerfile' }, [], null]) {
+      assert.equal((await request({ path, value })).body.code, 'invalid_body');
+    }
+    for (const headers of [web, {}]) {
+      const reply = await request({ path, headers, value: {} });
+      assert.equal(reply.status, 200);
+      assert.deepEqual(reply.body, expected);
+    }
+  }
+  assert.deepEqual(environmentCalls, ['check', 'check', 'status', 'status', 'build', 'build']);
   assert.equal(issued, 2);
 });
 
@@ -494,10 +541,10 @@ test('the agent integration defaults on, but manual browser endpoints do not wai
     apply(ctx, { ...config, agentEnabled: { get: () => currentValue } });
     try {
       assert.equal(injectionCount, agentEnabled ? 1 : 0);
-      assert.ok(routes.has('/dsh-browser/v2/view'));
-      assert.ok(routes.has('/dsh-browser/v2/browser/status'));
-      assert.ok(routes.has('/dsh-browser/v2/stream'));
-      assert.ok(!routes.has('/dsh-browser/v1/view'));
+      assert.ok(routes.has('/dsh-plugin-workspace-browser/v2/view'));
+      assert.ok(routes.has('/dsh-plugin-workspace-browser/v2/browser/status'));
+      assert.ok(routes.has('/dsh-plugin-workspace-browser/v2/stream'));
+      assert.ok([...routes].every((path) => !path.startsWith('/dsh-browser/')));
       const before = [...routes];
       currentValue = !agentEnabled;
       changed();
@@ -525,8 +572,8 @@ test('Session grants work before the display connects and last until revoked or 
       assert.deepEqual(services, ['tools']);
       activate = (collision = false) => { deactivate = setup({
         tools: { register(value) {
-          assert.equal(value.name, 'browser');
-          if (collision) throw new Error('tool "browser" is already registered');
+          assert.equal(value.name, 'dsh-plugin-workspace-browser');
+          if (collision) throw new Error('tool "dsh-plugin-workspace-browser" is already registered');
           tool = value;
           return () => { tool = undefined; unregisters++; };
         } },
