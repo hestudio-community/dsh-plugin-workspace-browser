@@ -6,6 +6,7 @@ import { createBrowserConnection, makeBrowserView } from '../src/client/browser-
 import { makeNativeMenu } from '../src/client/native-menu.js';
 import { post } from '../src/client/http.js';
 import { accessErrors as accessErrorsStyle, overlay as overlayStyle } from '../src/client/styles.js';
+import { settings as settingsStyles } from '../src/client/settings-styles.js';
 import { createStreamChannel } from '../src/client/stream.js';
 import { API, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION } from '../src/shared/protocol.js';
 
@@ -258,7 +259,7 @@ test('the served bundle settings expose a direct Switch backed by the DSH config
   for (const locale of ['en', 'zh']) {
     const messages = JSON.parse(readFileSync(new URL(`../locale/${locale}.json`, import.meta.url), 'utf8'));
     assert.equal(messages.meta.title, 'dsh-plugin-workspace-browser');
-    for (const key of ['agentSettingsHeading', 'agentSettingsDescription', 'sessionAgentAccess']) {
+    for (const key of ['agentSettingsHeading', 'agentSettingsDescription', 'sessionAgentAccess', 'environmentBuildingButton']) {
       assert.ok(messages[key]);
     }
   }
@@ -505,8 +506,14 @@ function mountEnvironment(t) {
   t.after(settings.dispose);
   const render = settings.renderEnvironment;
   const byLabel = (label) => find(render(), (node) => node.children.includes(label));
+  // The live region's text nodes, so a test can assert what the status line says.
+  const notice = () => {
+    const region = find(render(), (node) => node.props?.role === 'status' && node.props?.className);
+    const lines = (region?.children ?? []).filter((child) => child && typeof child === 'object');
+    return lines.length ? lines.map((line) => line.children[0]).join(' ') : undefined;
+  };
   return {
-    render, unmount: settings.unmount, byLabel,
+    render, unmount: settings.unmount, byLabel, notice,
     check: () => (byLabel('environmentRecheckButton') ?? byLabel('environmentCheckButton')).props,
     build: () => (byLabel('environmentBuildButton') ?? byLabel('environmentRebuildButton')
       ?? byLabel('environmentRetryBuildButton'))?.props,
@@ -555,7 +562,10 @@ test('environment settings check manually and only build for a missing or incomp
   prereqsReady = true;
   imageError = undefined;
   await env.check().onClick();
-  assert.ok(env.byLabel('environmentReady'));
+  // A passing image needs no extra sentence: its row already reads as passed.
+  assert.equal(env.byLabel('environmentRunnerImage').type, 'div');
+  assert.ok(env.byLabel('environmentCheckPass'));
+  assert.equal(env.notice(), undefined);
   assert.equal(env.build(), undefined);
   imageError = 'runner_image_incompatible';
   await env.check().onClick();
@@ -569,23 +579,35 @@ test('environment settings check manually and only build for a missing or incomp
   await build.onClick();
   await pending;
   assert.ok(env.byLabel('environmentBuilding'));
-  assert.equal(env.build()['aria-disabled'], true);
+  const working = env.byLabel('environmentBuildingButton');
+  assert.equal(working.props['aria-disabled'], true);
+  assert.equal(working.props['aria-busy'], true);
+  assert.ok(working.props.className.includes(settingsStyles.buttonProgress));
+  assert.ok(working.props.className.includes(settingsStyles.button));
+  const spinner = find(working, (node) => node.props?.className === settingsStyles.spinner);
+  assert.equal(spinner.props['aria-hidden'], true);
   assert.deepEqual(requests, [statusPath, checkPath, checkPath, checkPath, checkPath, buildPath]);
   t.mock.timers.tick(1999);
   assert.equal(requests.length, 6);
   status = 'building';
   t.mock.timers.tick(1);
   await flush();
-  assert.deepEqual(requests, [statusPath, checkPath, checkPath, buildPath, statusPath]);
+  assert.deepEqual(requests, [statusPath, checkPath, checkPath, checkPath, checkPath, buildPath, statusPath]);
   status = 'succeeded';
   t.mock.timers.tick(2000);
   await flush();
-  assert.deepEqual(requests, [statusPath, checkPath, checkPath, buildPath, statusPath, statusPath, checkPath]);
+  assert.deepEqual(requests, [statusPath, checkPath, checkPath, checkPath, checkPath, buildPath, statusPath, statusPath, checkPath]);
   assert.ok(env.byLabel('environmentBuildSucceeded'));
   assert.ok(env.byLabel('environmentCheckPass'));
-  assert.equal(env.build().disabled, false);
+  // The stub still reports a missing image, so the action returns, enabled and settled.
+  assert.equal(env.build()['aria-disabled'], undefined);
+  assert.equal(env.byLabel('environmentBuildingButton'), undefined);
   t.mock.timers.tick(4000);
-  assert.equal(requests.length, 7);
+  assert.equal(requests.length, 9);
+  const page = env.render();
+  const checkButton = find(page, (node) => node.type === 'button' && node.children.includes('environmentRecheckButton'));
+  assert.ok(checkButton.props.className.includes(settingsStyles.buttonOutline));
+  assert.equal(find(page, (node) => node.props?.className === settingsStyles.spinner), undefined);
 });
 
 test('environment settings resume an existing build, show failure, and do not check or poll after failure', async (t) => {
@@ -593,25 +615,82 @@ test('environment settings resume an existing build, show failure, and do not ch
   let polls = 0;
   t.mock.method(globalThis, 'fetch', async (url) => {
     assert.equal(url, `${API}/environment/build/status`);
-    if (++polls === 1) return response({ state: 'building' });
+    if (++polls === 1) return envResponse({ state: 'building' });
     if (polls === 2) throw new TypeError('Network error');
-    return response({ state: 'failed', code: 'runner_build_timeout' });
+    return envResponse({ state: 'failed', code: 'runner_build_timeout' });
   });
   const env = mountEnvironment(t);
   env.render();
   await flush();
   assert.ok(env.byLabel('environmentBuilding'));
+  const resumed = env.byLabel('environmentBuildingButton');
+  assert.equal(resumed.props['aria-busy'], true);
+  assert.equal(resumed.props['aria-disabled'], true);
+  assert.ok(find(resumed, (node) => node.props?.className === settingsStyles.spinner));
   t.mock.timers.tick(2000);
   await flush();
   assert.ok(env.byLabel('environmentBuildStatusError'));
-  assert.equal(env.build().disabled, true);
-  t.mock.timers.tick(2000);
+  // An unknown state has no build action and polls no further; the status retry takes its place.
+  assert.equal(env.build(), undefined);
+  const retryStatus = env.byLabel('environmentRetryStatusButton');
+  assert.equal(retryStatus.props['aria-disabled'], undefined);
+  t.mock.timers.tick(4000);
+  assert.equal(polls, 2);
+  await retryStatus.props.onClick();
   await flush();
   assert.equal(env.byLabel('runnerBuildTimeout').props.role, 'alert');
-  assert.equal(env.byLabel('environmentBuilding'), undefined);
-  assert.equal(env.build().disabled, false);
+  assert.equal(env.byLabel('environmentBuildingButton'), undefined);
+  // The failed build offers a retry, enabled again once the status is known.
+  assert.ok(env.byLabel('environmentRetryBuildButton'));
+  assert.equal(env.build()['aria-disabled'], undefined);
   t.mock.timers.tick(4000);
   assert.equal(polls, 3);
+});
+
+test('a failed build keeps its retry after a recheck, and loses it once the image passes', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let status = 'idle';
+  let imageStatus = 'fail';
+  t.mock.method(globalThis, 'fetch', async (url) => {
+    const path = url.slice(API.length);
+    if (path === '/environment/build/status') return envResponse({ state: status });
+    if (path === '/environment/build') {
+      status = 'building';
+      return envResponse({ state: 'building' });
+    }
+    return envResponse({ checks: [
+      { id: 'dockerConfig', status: 'pass' }, { id: 'dockerCli', status: 'pass' }, { id: 'dockerEngine', status: 'pass' },
+      { id: 'runnerImage', status: imageStatus, code: imageStatus === 'fail' ? 'runner_image_missing' : undefined },
+    ] });
+  });
+  const env = mountEnvironment(t);
+  env.render();
+  await flush();
+  await env.check().onClick();
+  await env.build().onClick();
+  await flush();
+  assert.ok(env.byLabel('environmentBuildingButton'));
+  assert.ok(env.byLabel('environmentBuilding'));
+
+  status = 'failed';
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(env.byLabel('runnerBuildFailed').props.role, 'alert');
+  assert.equal(env.byLabel('environmentBuildingButton'), undefined);
+  assert.ok(env.byLabel('environmentRetryBuildButton'));
+
+  // A recheck clears the failure's checks; the retry must survive it.
+  await env.check().onClick();
+  assert.ok(env.byLabel('runnerImageMissing'));
+  assert.ok(env.byLabel('environmentRetryBuildButton'));
+
+  // Once the image passes, the retry is withdrawn with the check-driven action.
+  imageStatus = 'pass';
+  await env.check().onClick();
+  assert.ok(env.byLabel('environmentCheckPass'));
+  assert.equal(env.notice(), undefined);
+  assert.equal(env.byLabel('environmentRetryBuildButton'), undefined);
+  assert.equal(env.build(), undefined);
 });
 
 test('unmounting environment settings cancels timers and ignores an in-flight status response', async (t) => {
@@ -624,7 +703,7 @@ test('unmounting environment settings cancels timers and ignores an in-flight st
 
   const waiting = mountEnvironment(t);
   waiting.render();
-  pending[0].resolve(response({ state: 'building' }));
+  pending[0].resolve(envResponse({ state: 'building' }));
   await flush();
   waiting.unmount();
   t.mock.timers.tick(2000);
@@ -632,7 +711,7 @@ test('unmounting environment settings cancels timers and ignores an in-flight st
 
   const polling = mountEnvironment(t);
   polling.render();
-  pending[1].resolve(response({ state: 'building' }));
+  pending[1].resolve(envResponse({ state: 'building' }));
   await flush();
   t.mock.timers.tick(2000);
   assert.equal(pending[2].signal.aborted, false);
@@ -640,7 +719,7 @@ test('unmounting environment settings cancels timers and ignores an in-flight st
   assert.equal(pending.length, 3);
   polling.unmount();
   assert.equal(pending[2].signal.aborted, true);
-  pending[2].resolve(response({ state: 'succeeded' }));
+  pending[2].resolve(envResponse({ state: 'succeeded' }));
   await flush();
   t.mock.timers.tick(4000);
   assert.equal(pending.length, 3);

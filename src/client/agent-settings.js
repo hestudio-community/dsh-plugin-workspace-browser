@@ -62,13 +62,14 @@ export function makeAgentSettings(React, form) {
     const label = t('agentSettingsLabel');
     return h('section', { 'aria-label': t('agentSettingsHeading'), className: settings.section },
       h('h2', { className: settings.heading }, t('agentSettingsHeading')),
-      h('div', { className: settings.row },
-        h('div', { className: settings.copy },
-          h('label', { htmlFor: switchId }, label),
-          h('p', { id: descriptionId, className: settings.detail }, t('agentSettingsDescription')),
-          h('div', { role: 'status', className: settings.status }, notice ? t(notice) : null)),
-        renderSwitch(h, {
-          id: switchId, descriptionId, checked: value === true, disabled: !writable, busy, onChange: setEnabled,
-        })));
+      h('div', { className: settings.card },
+        h('div', { className: settings.row },
+          h('div', { className: settings.copy },
+            h('label', { htmlFor: switchId }, label),
+            h('p', { id: descriptionId, className: settings.detail }, t('agentSettingsDescription')),
+            h('div', { role: 'status', className: settings.status }, notice ? t(notice) : null)),
+          renderSwitch(h, {
+            id: switchId, descriptionId, checked: value === true, disabled: !writable, busy, onChange: setEnabled,
+          }))));
   };
 }
