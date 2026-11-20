@@ -1,7 +1,7 @@
 import pkg from '../../package.json' with { type: 'json' };
 import { PROJECT_ID } from './identity.js';
 
-export const RUNNER_PROTOCOL = '1';
+export const RUNNER_PROTOCOL = '2';
 export const RUNNER_PROTOCOL_LABEL = `dev.dsh.${PROJECT_ID}.runner-protocol`;
 export const RUNNER_VERSION = pkg.version;
 export const RUNNER_VERSION_LABEL = `dev.dsh.${PROJECT_ID}.plugin-version`;
@@ -23,7 +23,7 @@ export const RUNNER_IMAGE = runnerImageTag(RUNNER_VERSION);
 
 export function runnerBuildArgs(context, dockerfile, version = RUNNER_VERSION) {
   return ['build', '--platform', IMAGE_PLATFORM, '--tag', runnerImageTag(version),
-    '--build-arg', `${RUNNER_VERSION_ARG}=${version}`, '--file', dockerfile, context];
+    '--build-arg', `${RUNNER_VERSION_ARG}=${version}`, '--build-arg', `DSH_RUNNER_PROTOCOL=${RUNNER_PROTOCOL}`, '--file', dockerfile, context];
 }
 
 // Basenames relative to the packaged runner/ build context.
@@ -31,6 +31,7 @@ export const RUNNER_BUILD_FILES = Object.freeze([
   'Dockerfile',
   '.dockerignore',
   'automation.mjs',
+  'identity.mjs',
   'profile-recovery.mjs',
   'protocol.mjs',
   'proxy.mjs',

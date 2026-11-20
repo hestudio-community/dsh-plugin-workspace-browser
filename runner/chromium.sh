@@ -1,3 +1,8 @@
 #!/bin/sh
-# Do not run Chromium or its children as the privileged runner process.
-exec gosu browser env HOME=/home/browser USER=browser LOGNAME=browser /usr/bin/chromium "$@"
+set -eu
+if [ -n "$DSH_BROWSER_GROUPS" ]; then
+  groups="--groups=$DSH_BROWSER_GROUPS"
+else
+  groups=--clear-groups
+fi
+exec setpriv "--reuid=$DSH_BROWSER_UID" "--regid=$DSH_BROWSER_GID" "$groups" -- /usr/bin/chromium "$@"

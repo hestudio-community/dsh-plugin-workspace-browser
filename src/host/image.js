@@ -15,6 +15,9 @@ const imageIdPattern = /^sha256:[a-f0-9]{64}$/;
 export function environmentError(code) {
   const messages = {
     docker_config_invalid: 'The Docker CLI and seccomp profile must use valid absolute paths.',
+    docker_endpoint_unsupported: 'Select the default local Docker endpoint; remote engines cannot mount this workspace.',
+    docker_identity_unsupported: 'Use a non-root Linux Host account with a rootful Docker engine and no user namespace remapping, or use Docker Desktop on Windows or macOS.',
+    runner_workspace_invalid: 'Verify that the registered workspace still names the original directory and Docker can share it with read/write access.',
     docker_cli_missing: 'The local Docker CLI was not found.',
     docker_cli_unavailable: 'The local Docker CLI could not be run.',
     docker_engine_unavailable: 'The local Docker engine could not be reached.',
@@ -59,9 +62,15 @@ export function createRunnerEnvironment({ configure, command, signal, context = 
         if (result.code !== 0 || !result.output.trim()) throw environmentError('docker_cli_unavailable');
       },
       async () => {
-        const result = await command(docker, ['version', '--format', '{{.Server.Os}}/{{.Server.Arch}}'], signal, 'engine');
+        const result = await command(docker, ['info', '--format', '{{.OSType}}/{{.Architecture}} {{json .SecurityOptions}}'], signal, 'engine');
         if (result.code !== 0 || !result.output.trim()) throw environmentError('docker_engine_unavailable');
-        if (result.output.trim() !== IMAGE_PLATFORM) throw environmentError('docker_engine_incompatible');
+        const match = /^linux\/(?:amd64|x86_64) (.+)$/.exec(result.output.trim());
+        if (!match) throw environmentError('docker_engine_incompatible');
+        let options;
+        try { options = JSON.parse(match[1]); } catch { /* Unknown identity mapping: fail closed. */ }
+        if (!Array.isArray(options) || options.some(value => typeof value !== 'string' || /(?:^|,)name=(?:rootless|userns)(?:,|$)/.test(value))) {
+          throw environmentError('docker_identity_unsupported');
+        }
       },
       async () => { image = await inspectImage(docker); },
     ];

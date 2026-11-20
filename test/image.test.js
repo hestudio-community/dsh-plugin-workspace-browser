@@ -15,7 +15,7 @@ const matched = inspected(imageId, RUNNER_VERSION);
 const missing = { code: 1, output: '' };
 const result = (output = '', code = 0) => ({ output, code });
 const context = join('test path', 'runner');
-const defaultReply = phase => ({ cli: result('Docker version 29.0.0'), engine: result(IMAGE_PLATFORM), image: matched, build: result() })[phase];
+const defaultReply = phase => ({ cli: result('Docker version 29.0.0'), engine: result('linux/x86_64 ["name=seccomp,profile=builtin"]'), image: matched, build: result() })[phase];
 
 function fixture({ reply = defaultReply, configError, absentFile, runnerVersion = RUNNER_VERSION } = {}) {
   const calls = [];
@@ -66,7 +66,9 @@ test('diagnostics report the failing stage, skip dependencies, and give startup 
     [3, 'runner_image_missing', missing],
     [3, 'runner_image_incompatible', result(`${imageId} linux/amd64`)],
     [3, 'runner_image_incompatible', result(`${imageId} linux/amd64 ${RUNNER_PROTOCOL}`)],
-    [3, 'runner_image_incompatible', result(`${imageId} linux/amd64 2 ${RUNNER_VERSION}`)],
+    [3, 'runner_image_incompatible', result(`${imageId} linux/amd64 1 ${RUNNER_VERSION}`)],
+    ...['["name=rootless"]', '["name=userns"]', 'null', 'not-json'].map(options =>
+      [2, 'docker_identity_unsupported', result(`linux/amd64 ${options}`)]),
     [3, 'runner_image_incompatible', result(`${imageId} linux/arm64 ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`)],
     [3, 'runner_image_incompatible', result(`not-a-sha linux/amd64 ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`)],
     [3, 'runner_image_incompatible', inspected(imageId, `${RUNNER_VERSION} `)],

@@ -6,7 +6,7 @@ import {
   RUNNER_VERSION, RUNNER_VERSION_ARG, RUNNER_VERSION_LABEL, runnerBuildArgs, runnerImageTag,
 } from '../src/shared/runner-image.js';
 
-const runtimeFiles = ['automation.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'chromium.sh', 'openbox.xml'];
+const runtimeFiles = ['automation.mjs', 'identity.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'chromium.sh', 'openbox.xml'];
 const buildFiles = ['Dockerfile', '.dockerignore', ...runtimeFiles];
 const runner = new URL('../runner/', import.meta.url);
 
@@ -44,7 +44,7 @@ test('Docker context, COPY and protocol metadata match the shared build contract
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(RUNNER_VERSION, pkg.version);
   assert.equal(RUNNER_IMAGE, `dsh-plugin-workspace-browser-runner:v${pkg.version.replace('+', '_')}`);
-  assert.equal(RUNNER_PROTOCOL, '1');
+  assert.equal(RUNNER_PROTOCOL, '2');
   assert.equal(RUNNER_PROTOCOL_LABEL, 'dev.dsh.dsh-plugin-workspace-browser.runner-protocol');
   assert.equal(RUNNER_VERSION_LABEL, 'dev.dsh.dsh-plugin-workspace-browser.plugin-version');
 
@@ -55,7 +55,8 @@ test('Docker context, COPY and protocol metadata match the shared build contract
   const dockerfile = (await readFile(new URL('Dockerfile', runner), 'utf8')).split(/\r?\n/);
   assert.deepEqual(dockerfile.filter((line) => /^\s*COPY\b/i.test(line)), [`COPY ${runtimeFiles.join(' ')} ./`]);
   assert.equal(dockerfile.some((line) => /^\s*ADD\b/i.test(line)), false);
-  assert.ok(dockerfile.includes(`LABEL ${RUNNER_PROTOCOL_LABEL}="${RUNNER_PROTOCOL}"`));
+  assert.ok(dockerfile.includes('ARG DSH_RUNNER_PROTOCOL'));
+  assert.ok(dockerfile.includes(`LABEL ${RUNNER_PROTOCOL_LABEL}="\${DSH_RUNNER_PROTOCOL}"`));
   const versionArg = dockerfile.indexOf(`ARG ${RUNNER_VERSION_ARG}`);
   const versionLabel = dockerfile.indexOf(`LABEL ${RUNNER_VERSION_LABEL}="\${${RUNNER_VERSION_ARG}}"`);
   assert.ok(versionArg > dockerfile.findLastIndex(line => /^(?:RUN|COPY)\b/.test(line)));
@@ -86,7 +87,7 @@ test('shared build arguments pass the exact version separately from the mapped D
   const version = '1.2.3-rc.2+commit.1';
   assert.deepEqual(runnerBuildArgs('/user path/runner', '/user path/runner/Dockerfile', version), [
     'build', '--platform', 'linux/amd64', '--tag', 'dsh-plugin-workspace-browser-runner:v1.2.3-rc.2_commit.1',
-    '--build-arg', `DSH_PLUGIN_VERSION=${version}`, '--file', '/user path/runner/Dockerfile', '/user path/runner',
+    '--build-arg', `DSH_PLUGIN_VERSION=${version}`, '--build-arg', `DSH_RUNNER_PROTOCOL=${RUNNER_PROTOCOL}`, '--file', '/user path/runner/Dockerfile', '/user path/runner',
   ]);
   assert.ok(runnerBuildArgs('/runner', '/runner/Dockerfile').includes(`DSH_PLUGIN_VERSION=${RUNNER_VERSION}`));
   const script = await readFile(new URL('../scripts/runner-release.mjs', import.meta.url), 'utf8');

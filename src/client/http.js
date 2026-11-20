@@ -6,6 +6,8 @@ export function admissionMessage(code) {
 }
 
 const environmentMessages = new Map([
+  ['docker_endpoint_unsupported', 'dockerEndpointUnsupported'],
+  ['docker_identity_unsupported', 'dockerIdentityUnsupported'],
   ['docker_config_invalid', 'dockerConfigInvalid'],
   ['docker_cli_missing', 'dockerCliMissing'],
   ['docker_cli_unavailable', 'dockerCliUnavailable'],

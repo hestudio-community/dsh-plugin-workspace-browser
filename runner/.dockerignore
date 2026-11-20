@@ -2,6 +2,7 @@
 !Dockerfile
 !.dockerignore
 !automation.mjs
+!identity.mjs
 !profile-recovery.mjs
 !protocol.mjs
 !proxy.mjs

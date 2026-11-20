@@ -8,6 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import puppeteer from 'puppeteer-core';
 import { AutomationError, createAutomation } from './automation.mjs';
+import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs } from './identity.mjs';
 import { recoverProfile } from './profile-recovery.mjs';
 import { readFrames, send, sendChunk } from './protocol.mjs';
 import { createProxy } from './proxy.mjs';
@@ -16,7 +17,7 @@ const exec = promisify(execFile);
 const display = ':91';
 const width = 1280;
 const height = 800;
-const browserAuth = '/home/browser/.dsh-xauth';
+
 const workers = new Set();
 const sessions = new Map();
 const jobs = new Map();
@@ -184,36 +185,47 @@ async function setup() {
     const devices = (await readFile('/proc/net/dev', 'utf8')).split('\n').slice(2).filter(line => line.trim()).map(line => line.split(':')[0].trim());
     if (devices.length !== 1 || devices[0] !== 'lo' || interfaces.some(([name, entries]) => name !== 'lo' || !entries.every(entry => entry.internal))) throw new Error();
     if (!/^NoNewPrivs:\s*1$/m.test(await readFile('/proc/self/status', 'utf8'))) throw new Error();
-    if (!(await readFile('/proc/self/mountinfo', 'utf8')).split('\n').some(line => line.split(' ')[4] === '/profile')) throw new Error();
-
-    startupCode = 'runner_display_failed';
-    phase = 'display and profile preparation failed';
+    const mountPaths = (await readFile('/proc/self/mountinfo', 'utf8')).split('\n').map(line => line.split(' ')[4]).filter(Boolean);
     const ids = async account => Promise.all(['-u', '-g'].map(async flag => Number((await exec('id', [flag, account])).stdout.trim())));
-    const [browserUid, browserGid] = await ids('browser');
-    const [deskUid, deskGid] = await ids('dshdesk');
-    await chown('/profile', browserUid, browserGid);
-    await chmod('/profile', 0o700);
+    startupCode = 'runner_workspace_invalid';
+    phase = 'browser workspace or identity is unavailable';
+    const identity = browserIdentity(process.env, await ids('browser'));
+    const { uid: browserUid, gid: browserGid } = identity;
+    if (!mountPaths.includes('/workspace')) throw new Error();
+    await exec('setpriv', [...privilegeArgs(identity), 'sh', '-c', 'test -d /workspace && test -r /workspace && test -w /workspace && test -x /workspace']);
+    const desk = displayIdentity(identity, await ids('dshdesk'));
+    const { uid: deskUid, gid: deskGid } = desk;
+    const deskArgs = privilegeArgs(desk);
+
+    startupCode = 'runner_profile_recovery_failed';
+    phase = 'private profile preparation failed';
+    await migrateProfile('/profile', mountPaths, identity);
+    startupCode = 'runner_display_failed';
+    phase = 'display preparation failed';
+    const browserHome = await mkdtemp('/tmp/dsh-browser-home-');
+    const browserAuth = `${browserHome}/Xauthority`;
+    await chown(browserHome, browserUid, browserGid);
     const runDirectory = await mkdtemp('/tmp/dsh-plugin-workspace-browser-');
     await chown(runDirectory, deskUid, deskGid);
     await chmod(runDirectory, 0o700);
     const displayAuth = `${runDirectory}/Xauthority`;
     vncPath = `${runDirectory}/rfb.sock`;
-    await exec('gosu', ['dshdesk', 'xauth', '-f', displayAuth, 'add', display, '.', randomBytes(16).toString('hex')]);
+    await exec('setpriv', [...deskArgs, 'xauth', '-f', displayAuth, 'add', display, '.', randomBytes(16).toString('hex')]);
     await copyFile(displayAuth, browserAuth);
     await chown(browserAuth, browserUid, browserGid);
     await chmod(browserAuth, 0o600);
-    const deskEnv = { ...process.env, DISPLAY: display, XAUTHORITY: displayAuth, HOME: '/home/dshdesk' };
+    const deskEnv = { ...process.env, DISPLAY: display, XAUTHORITY: displayAuth, HOME: runDirectory };
 
     phase = 'X11 display readiness failed';
     // Xtigervnc owns the X11 framebuffer, so a remote resize changes the maximized Chromium window.
     // Keep unauthenticated RFB private to dshdesk and prevent X11 clients from enabling clipboard exchange.
-    worker('X11/RFB server', 'gosu', ['dshdesk', '/usr/bin/Xtigervnc', display,
+    worker('X11/RFB server', 'setpriv', [...deskArgs, '/usr/bin/Xtigervnc', display,
       '-geometry', `${width}x${height}`, '-depth', '24', '-noreset', '-nolisten', 'tcp', '-auth', displayAuth,
       '-desktop', 'Chromium', '-rfbport', '-1', '-rfbunixpath', vncPath, '-rfbunixmode', '0600',
       '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=1', '-noclipboard',
       '-AcceptCutText=0', '-SendCutText=0', '-SendPrimary=0', '-SetPrimary=0', '-AllowOverride='], deskEnv);
     await waitFor(async () => Boolean(await exec('xdpyinfo', [], { env: deskEnv, timeout: 800 })));
-    worker('window manager', 'gosu', ['dshdesk', 'openbox', '--config-file', '/app/openbox.xml'], deskEnv);
+    worker('window manager', 'setpriv', [...deskArgs, 'openbox', '--config-file', '/app/openbox.xml'], deskEnv);
     await waitFor(async () => {
       const { stdout: output } = await exec('xprop', ['-root', '_NET_SUPPORTING_WM_CHECK'], { env: deskEnv, timeout: 800 });
       return /window id # 0x[0-9a-f]+/i.test(output);
@@ -240,7 +252,8 @@ async function setup() {
       pipe: true, defaultViewport: null, timeout: 15_000, protocolTimeout: 10_000,
       handleSIGINT: false, handleSIGTERM: false, handleSIGHUP: false,
       ignoreDefaultArgs: ['--disable-popup-blocking'],
-      env: { PATH: process.env.PATH, LANG: 'C.UTF-8', DISPLAY: display, XAUTHORITY: browserAuth },
+      env: { PATH: process.env.PATH, LANG: 'C.UTF-8', DISPLAY: display, XAUTHORITY: browserAuth, HOME: browserHome,
+        DSH_BROWSER_UID: String(browserUid), DSH_BROWSER_GID: String(browserGid), DSH_BROWSER_GROUPS: identity.groups.join(',') },
       args: [
         '--disable-setuid-sandbox', '--disable-quic', '--lang=en-US', '--start-maximized', `--window-size=${width},${height}`,
         '--force-webrtc-ip-handling-policy=disable_non_proxied_udp', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',

@@ -9,7 +9,7 @@ const MAX_VIEWS = 4;
 const startupCodes = new Set([
   'docker_cli_missing', 'docker_cli_unavailable', 'docker_config_invalid', 'docker_engine_unavailable', 'docker_engine_incompatible',
   'runner_image_missing', 'runner_image_incompatible', 'runner_start_failed', 'runner_start_timeout', 'runner_isolation_failed',
-  'runner_display_failed', 'runner_profile_recovery_failed', 'runner_profile_in_use', 'runner_unavailable',
+  'docker_endpoint_unsupported', 'docker_identity_unsupported', 'runner_workspace_invalid', 'runner_display_failed', 'runner_profile_recovery_failed', 'runner_profile_in_use', 'runner_unavailable',
 ]);
 
 const missingSession = () => new BrowserError('session_workspace_missing', 'The session does not belong to a unique registered workspace.', 404);
@@ -120,10 +120,11 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
     const launch = () => {
       if (!isCurrent()) return;
       attempt.prior = undefined;
-      if (!registry.get(room.id)) { retire(room); return; }
+      const workspace = registry.get(room.id);
+      if (workspace?.id !== room.id) { retire(room); return; }
       try {
         // Runner callbacks can fire before startRunner returns. Finish installing the attempt first.
-        const runner = attempt.runner = startRunner(room.id, (error) => queueMicrotask(() => fail(error)));
+        const runner = attempt.runner = startRunner(room.id, (error) => queueMicrotask(() => fail(error)), workspace.path);
         Promise.resolve(runner.ready).then(() => {
           if (!isCurrent() || room.state === 'failed') return;
           room.state = 'ready';

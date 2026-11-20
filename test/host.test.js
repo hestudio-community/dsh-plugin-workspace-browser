@@ -26,10 +26,11 @@ test('DNS answers are pinned only if every A record belongs to public IPv4 space
 });
 
 test('runner is shared only within a workspace; tickets are peer-bound and single-use', async (t) => {
-  const rows = new Map([['a', { id: 'a', sessionIds: ['s1', 's2'] }], ['b', { id: 'b', sessionIds: ['s3'] }]]);
+  const rows = new Map([['a', { id: 'a', path: '/registered/a', sessionIds: ['s1', 's2'] }], ['b', { id: 'b', path: '/registered/b', sessionIds: ['s3'] }]]);
   const startups = [];
   const stops = [];
-  const pool = createPool({ get: (id) => rows.get(id), list: () => [...rows.values()] }, (id) => {
+  const pool = createPool({ get: (id) => rows.get(id), list: () => [...rows.values()] }, (id, _onExit, path) => {
+    assert.equal(path, `/registered/${id}`);
     startups.push(id);
     return { ready: Promise.resolve(), stop: async () => { stops.push(id); } };
   });

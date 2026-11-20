@@ -11,6 +11,7 @@ const MIN_RESIZE_HEIGHT = 120;
 const requestMessages = new Map([
   ['session_workspace_missing', 'sessionWorkspaceMissing'],
   ['session_workspace_changed', 'sessionWorkspaceChanged'],
+  ['runner_workspace_invalid', 'runnerWorkspaceInvalid'],
   ['runner_unavailable', 'runnerUnavailable'],
   ['runner_bundle_invalid', 'runnerBundleInvalid'],
   ['runner_image_load_failed', 'runnerImageLoadFailed'],
