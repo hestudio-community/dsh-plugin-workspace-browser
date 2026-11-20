@@ -25,6 +25,8 @@ Keep slots, layout, and rendering in the client; workspace resolution, authoriza
 
 ## Dev Conventions
 
+- Match DSH UI conventions for every new or modified plugin control. Reuse existing components and shared scoped styles; when a native HTML control is needed, style it with DSH theme tokens and preserve keyboard focus, disabled, and validation states.
+
 - Make the smallest change that satisfies the request. Keep source, directories, commits, and version names consistent with repository conventions. If the user explicitly requests an exception, record the change to the rule in this file.
 - If a task requires an exception to a restriction, explain the exact operation and why it is necessary, and obtain the user's explicit approval before doing it. Approval applies only to that operation; it does not override the personal-review requirement for Git changes.
 - Do not stage or commit code that the user has not personally reviewed. Any staging or committing requires the user's explicit intent. Do not alter already staged content or existing commit records without explicit user consent. Never initiate a commit without the user saying `commit it`.

@@ -4,7 +4,7 @@ const scope = `${PROJECT_ID}-settings`;
 const spin = `${scope}-spin`;
 export const settings = Object.fromEntries([
   'page', 'section', 'heading', 'card', 'row', 'copy', 'detail', 'actions', 'button', 'buttonPrimary',
-  'buttonOutline', 'buttonProgress', 'spinner', 'status', 'error', 'list', 'version', 'tag', 'tagPass', 'tagFail', 'tagSkipped',
+  'input', 'buttonOutline', 'buttonProgress', 'spinner', 'status', 'error', 'list', 'version', 'tag', 'tagPass', 'tagFail', 'tagSkipped',
 ].map(name => [name, `${scope}-${name}`]));
 
 // Adapted from the DSH 0.2.2-rc.5 button, settings-card, tag, and spinner styles: the same
@@ -59,7 +59,15 @@ const css = `
 /* An action reporting its own progress keeps full contrast; only its aria-busy
    state and the spinner say it is working, so a long build never looks inert. */
 .${settings.button}[aria-disabled="true"][aria-busy="true"] { opacity: 1; cursor: progress; }
-.${settings.button}:focus-visible {
+.${settings.input} {
+  box-sizing: border-box; width: 8em; min-width: 0; max-width: 100%; height: 32px; padding-inline: 10px;
+  border: 1px solid var(--dsw-alias-border-l3, GrayText); border-radius: var(--dsw-radius-md, 12px);
+  background: var(--dsw-alias-bg-layer-2, Field); color: var(--dsw-alias-label-primary, FieldText);
+  font: inherit; font-weight: 400; font-variant-numeric: tabular-nums;
+}
+.${settings.input}:disabled { opacity: .4; }
+.${settings.input}[aria-invalid="true"] { border-color: var(--dsw-alias-state-error-primary, CanvasText); }
+.${settings.input}:focus-visible, .${settings.button}:focus-visible {
   outline: var(--dsw-focus-ring-width, 2px) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary, Highlight));
   outline-offset: 2px;
 }

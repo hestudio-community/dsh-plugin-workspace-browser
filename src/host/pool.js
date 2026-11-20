@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { BrowserError, validId } from '../shared/protocol.js';
 
 const TICKET_MS = 15_000;
-const IDLE_MS = 120_000;
+export const DEFAULT_IDLE_TIMEOUT_MINUTES = 2;
 const MAX_INSTANCES = 4;
 const MAX_TICKETS = 32;
 const MAX_VIEWS = 4;
@@ -18,7 +18,7 @@ const generationChanged = () => new BrowserError('browser_generation_changed', '
 const unavailable = () => new BrowserError('plugin_unavailable', 'The browser plugin is stopping.', 503);
 const startupFailure = () => new BrowserError('runner_start_failed', 'Chromium runner could not start.', 503);
 
-export function createPool(registry, startRunner) {
+export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => DEFAULT_IDLE_TIMEOUT_MINUTES) {
   const rooms = new Map();
   const stopping = new Set();
   const tickets = new Map();
@@ -165,11 +165,12 @@ export function createPool(registry, startRunner) {
 
   function sweep() {
     const now = Date.now();
+    const idleMs = getIdleTimeoutMinutes() * 60_000;
     for (const [key, entry] of tickets) if (entry.expiresAt <= now) tickets.delete(key);
     for (const room of rooms.values()) {
       if (!registry.get(room.id)) { retire(room); continue; }
       syncSeats(room);
-      if ((room.state === 'ready' || room.state === 'failed') && !room.seats.size && now - room.lastUsed > IDLE_MS) {
+      if ((room.state === 'ready' || room.state === 'failed') && !room.seats.size && idleMs > 0 && now - room.lastUsed >= idleMs) {
         retire(room);
         continue;
       }

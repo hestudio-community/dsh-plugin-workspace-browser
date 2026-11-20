@@ -440,6 +440,54 @@ test('display ownership transfers to the oldest remaining seat; idle status poll
   await assert.rejects(pool.issue('one', 'owner', first.runId, first.generation), { code: 'browser_closed' });
 });
 
+test('idle timeout changes apply to an already idle run on the next sweep', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] });
+  const row = { id: 'w', sessionIds: ['one'] };
+  let minutes = 1;
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({ ready: Promise.resolve(), stop: async () => {} }), () => minutes);
+  t.after(() => pool.dispose());
+  const { runId } = await pool.issue('one', 'owner');
+  t.mock.timers.tick(59_000);
+  minutes = 1440;
+  t.mock.timers.tick(62_000);
+  assert.equal(pool.status('one', runId).state, 'ready');
+  minutes = 1;
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(pool.status('one', runId), { state: 'closed' });
+});
+
+test('zero disables idle retirement until a positive timeout is restored', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] });
+  const row = { id: 'w', sessionIds: ['one'] };
+  let minutes = 1;
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({ ready: Promise.resolve(), stop: async () => {} }), () => minutes);
+  t.after(() => pool.dispose());
+  const { runId } = await pool.issue('one', 'owner');
+  t.mock.timers.tick(59_000);
+  minutes = 0;
+  t.mock.timers.tick(180_000);
+  assert.equal(pool.status('one', runId).state, 'ready');
+  minutes = 1;
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(pool.status('one', runId), { state: 'closed' });
+});
+
+test('the idle timeout starts at final seat release and expires at the configured minute', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] });
+  const row = { id: 'w', sessionIds: ['one'] };
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({ ready: Promise.resolve(), stop: async () => {} }), () => 1);
+  t.after(() => pool.dispose());
+  const { ticket, runId } = await pool.issue('one', 'owner');
+  const seat = pool.redeem(ticket, 'owner');
+  t.mock.timers.tick(121_000);
+  assert.equal(pool.status('one', runId).state, 'ready');
+  seat.release();
+  t.mock.timers.tick(59_000);
+  assert.equal(pool.status('one', runId).state, 'ready');
+  t.mock.timers.tick(1_000);
+  assert.deepEqual(pool.status('one', runId), { state: 'closed' });
+});
+
 test('stream announces ownership only after ticket redemption and leaves RFB binary', { timeout: 5_000 }, async (t) => {
   const row = { id: 'w', sessionIds: ['one', 'two'] };
   const streams = [];
@@ -516,7 +564,8 @@ test('the agent integration defaults on, but manual browser endpoints do not wai
   for (const [options, agentEnabled] of [[{}, true], [{ agentEnabled: false }, false]]) {
     const config = Config(options);
     assert.equal(config.agentEnabled.get(), agentEnabled);
-    assert.deepEqual(Object.keys(Config.dict).filter((key) => Config.dict[key].meta.volatile), ['agentEnabled']);
+    assert.equal(config.idleTimeoutMinutes.get(), 2);
+    assert.deepEqual(Object.keys(Config.dict).filter((key) => Config.dict[key].meta.volatile).sort(), ['agentEnabled', 'idleTimeoutMinutes']);
     let currentValue = agentEnabled;
     let injectionCount = 0;
     let bindingDisposals = 0;

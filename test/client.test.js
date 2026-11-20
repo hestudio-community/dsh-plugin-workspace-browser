@@ -155,14 +155,14 @@ test('native guide registers only its right-sidebar tab and binds the current vi
 function installSettings() {
   let contribution;
   let Component;
-  let snapshot = { status: 'ready', value: { agentEnabled: true }, writable: true, revision: 1 };
+  let snapshot = { status: 'ready', value: { agentEnabled: true, idleTimeoutMinutes: 2 }, writable: true, revision: 1 };
   const writes = [];
   const form = {
     getSnapshot: () => snapshot,
     subscribe: () => () => {},
     async mutate(ops, revision) {
       writes.push({ ops, revision });
-      snapshot = { ...snapshot, value: { agentEnabled: ops[0].value }, revision: revision + 1 };
+      snapshot = { ...snapshot, value: { ...snapshot.value, [ops[0].path[0]]: ops[0].value }, revision: revision + 1 };
       return true;
     },
   };
@@ -204,7 +204,7 @@ function installSettings() {
   function renderSection(index, beforeCommit) {
     const page = contribution.render({ t, view: 'page' });
     assert.equal(page.type, 'div');
-    assert.equal(page.children.length, 3);
+    assert.equal(page.children.length, 4);
     assert.equal(page.children[0].type, 'style');
     const entry = page.children[index + 1];
     Component = entry.type;
@@ -217,7 +217,8 @@ function installSettings() {
     unmount: mounted.dispose,
     writes, form,
     update: (next) => { snapshot = { ...snapshot, ...next }; },
-    renderEnvironment: (beforeCommit) => renderSection(1, beforeCommit),
+    renderIdle: () => renderSection(1),
+    renderEnvironment: (beforeCommit) => renderSection(2, beforeCommit),
     render() {
       const page = renderSection(0);
       assert.equal(find(page, (item) => item.type === 'contextMenu.button'), undefined);
@@ -263,6 +264,42 @@ test('the served bundle settings expose a direct Switch backed by the DSH config
       assert.ok(messages[key]);
     }
   }
+});
+
+test('idle timeout validates minutes, saves zero, and guards pending and read-only edits', async (t) => {
+  const settings = installSettings();
+  t.after(settings.dispose);
+  settings.serve();
+  function controls() {
+    const page = settings.renderIdle();
+    return { input: find(page, node => node.type === 'input').props,
+      save: find(page, node => node.type === 'button').props,
+      notice: find(page, node => node.props?.role === 'status').children[0] };
+  }
+  const edit = value => controls().input.onChange({ currentTarget: { value } });
+  assert.equal(controls().input.value, '2');
+  for (const value of ['', '-1', '1.5', '1441']) {
+    edit(value);
+    assert.equal(controls().notice, 'idleInvalid');
+    await controls().save.onClick();
+  }
+  assert.deepEqual(settings.writes, []);
+  edit('0');
+  await controls().save.onClick();
+  assert.deepEqual(settings.writes, [{ ops: [{ op: 'set', path: ['idleTimeoutMinutes'], value: 0 }], revision: 1 }]);
+  assert.equal(controls().input.value, '0');
+  edit('1440');
+  let finish;
+  settings.form.mutate = () => new Promise(resolve => { finish = resolve; });
+  const saving = controls().save.onClick();
+  assert.equal(controls().notice, 'agentSettingsSaving');
+  assert.ok(controls().input.disabled && controls().save.disabled);
+  finish(false);
+  await saving;
+  assert.equal(controls().notice, 'agentSettingsNotSaved');
+  settings.update({ writable: false });
+  assert.equal(controls().notice, 'agentSettingsReadOnly');
+  assert.ok(controls().input.disabled && controls().save.disabled);
 });
 
 test('settings guard unavailable, read-only, stale and pending actions and report failures', async (t) => {
