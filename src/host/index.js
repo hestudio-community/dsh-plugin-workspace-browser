@@ -7,7 +7,7 @@ import { registerWeb } from './web.js';
 export const inject = ['workspaceRegistry', 'connection', 'webServer'];
 
 export const Config = Schema.object({
-  agentEnabled: Schema.boolean().default(false).description('Offer Browser Use access to the visible workspace browser. Disable other Browser Use providers first.'),
+  agentEnabled: Schema.boolean().default(true).description('Register the workspace browser tool. Each Session must explicitly enable access to its workspace browser.'),
   dockerExecutable: Schema.string().default('').description('Absolute path to the local Docker CLI. Leave empty for the platform default.'),
   seccompProfile: Schema.string().default('').description('Absolute path to a reviewed Docker seccomp profile. Leave empty to use the bundled Chromium profile.'),
   profileNamespace: Schema.string().pattern(/^[A-Za-z0-9_-]{1,64}$/).default('default').description('Use a stable, distinct value for each DSH profile that shares this Docker engine.'),

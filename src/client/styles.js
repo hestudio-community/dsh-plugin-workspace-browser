@@ -5,11 +5,22 @@ export const control = {
   font: 'inherit', minHeight: 28, minWidth: 0, maxWidth: '100%', color: fg,
   background: bg, border, borderRadius: 6, padding: '3px 7px', boxSizing: 'border-box',
 };
-export const row = { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8 };
-export const bar = { ...row, padding: '8px 10px', borderBottom: border, flexShrink: 0 };
-export const fields = { display: 'grid', gap: 7, overflowWrap: 'anywhere' };
-export const accessBox = {
-  flexShrink: 0, maxHeight: '45%', overflow: 'auto', padding: '6px 10px', borderTop: border,
+export const switchControl = { ...control, display: 'inline-flex', alignItems: 'center', gap: 6 };
+export const switchTrack = (checked) => ({
+  display: 'inline-flex', flex: 'none', alignItems: 'center', justifyContent: checked ? 'flex-end' : 'flex-start',
+  width: 25, height: 14, borderRadius: 10, border: '1px solid currentColor', padding: '0 2px', boxSizing: 'border-box',
+  background: checked ? 'var(--dsw-alias-bg-brand, Highlight)' : 'transparent',
+});
+export const switchThumb = (checked) => ({
+  width: 8, height: 8, borderRadius: '50%', background: checked ? 'HighlightText' : 'currentColor',
+});
+export const bar = {
+  display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8,
+  padding: '8px 10px', borderBottom: border, flexShrink: 0,
+};
+export const accessErrors = {
+  overflowWrap: 'anywhere',
+  flexShrink: 0, maxHeight: '45%', overflow: 'auto', padding: '6px 10px',
 };
 export const viewport = { flex: 1, position: 'relative', minHeight: 0, minWidth: 0, overflow: 'hidden' };
 export const fill = { position: 'absolute', inset: 0 };

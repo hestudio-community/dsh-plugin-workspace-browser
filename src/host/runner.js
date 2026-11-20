@@ -318,7 +318,7 @@ function createRunner(config, workspaceId, onExit, docker, prepare, admissionSig
       } catch { /* Uncertain ownership: leave the container alone. */ }
       finally { if (child.exitCode === null && child.signalCode === null) child.kill(); }
     })();
-    onExit();
+    onExit(error);
     return stopPromise;
   }
 

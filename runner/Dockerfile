@@ -3,7 +3,7 @@ FROM node:22-bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates chromium fonts-liberation gosu openbox \
-      tigervnc-scraping-server x11-utils xauth xvfb \
+      tigervnc-standalone-server x11-utils xauth xfonts-base \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /usr/sbin/nologin browser \
     && useradd --create-home --shell /usr/sbin/nologin dshdesk \

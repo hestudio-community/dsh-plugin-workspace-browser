@@ -9,7 +9,7 @@ export class AutomationError extends Error {}
 const requestKeys = new Map([
   ['list', []],
   ['inspect', ['tabId']],
-  ['navigate', ['tabId', 'documentId', 'url']],
+  ['navigate', ['tabId', 'url']],
   ['click', ['tabId', 'documentId', 'elementId']],
   ['fill', ['tabId', 'documentId', 'elementId', 'text']],
   ['scroll', ['tabId', 'documentId', 'deltaX', 'deltaY']],
@@ -25,14 +25,18 @@ function webUrl(value) {
   }
 }
 
+function startingUrl(url) {
+  return url === 'about:blank' || url === 'chrome://newtab/' || url === 'chrome://new-tab-page/';
+}
+
 function validate(request) {
   const keys = requestKeys.get(request?.method);
-  if (!keys || Object.keys(request).length !== 2 + keys.length || keys.some(key => !Object.hasOwn(request, key))) return false;
-  if (webUrl(request.origin)?.origin !== request.origin || typeof request.origin !== 'string') return false;
+  if (!keys || !Object.hasOwn(request, 'method') || Object.keys(request).length !== 1 + keys.length ||
+      keys.some(key => !Object.hasOwn(request, key))) return false;
   for (const key of ['tabId', 'documentId', 'elementId']) {
     if (keys.includes(key) && (typeof request[key] !== 'string' || !/^[a-z0-9-]{36}$/.test(request[key]))) return false;
   }
-  if (request.method === 'navigate' && webUrl(request.url)?.origin !== request.origin) return false;
+  if (request.method === 'navigate' && !webUrl(request.url)) return false;
   if (request.method === 'fill' && (typeof request.text !== 'string' || request.text.length > LIMIT_FILL || /[\x00-\x1f\x7f\u2028\u2029]/.test(request.text))) return false;
   if (request.method === 'scroll' && [request.deltaX, request.deltaY].some(delta => !Number.isInteger(delta) || Math.abs(delta) > 1200)) return false;
   return true;
@@ -40,8 +44,8 @@ function validate(request) {
 
 // Evaluated only in Puppeteer's isolated realm in the top-level frame. No model
 // code, selectors, page-installed JavaScript globals, or other frames are used.
-function onPage(method, expectedOrigin, expectedUrl, snapshot, args) {
-  if (location.origin !== expectedOrigin || location.href !== expectedUrl || document.visibilityState !== 'visible') return null;
+function onPage(method, expectedUrl, snapshot, args) {
+  if (location.href !== expectedUrl) return null;
 
   function visible(e) {
     if (!e.isConnected || e.ownerDocument !== document || e.closest('[inert], [hidden], [aria-hidden="true"]') ||
@@ -87,7 +91,8 @@ function onPage(method, expectedOrigin, expectedUrl, snapshot, args) {
     const baseTarget = document.querySelector('base[target]')?.target;
     const fields = [e.tagName, e.type, e.name, e.autocomplete, e.getAttribute('onclick'),
       anchor?.href, anchor?.target, anchor?.getAttribute('download'), baseTarget,
-      e.getAttribute('formaction'), e.getAttribute('formtarget'), e.getAttribute('formmethod'),
+      e.getAttribute('formaction'), e.hasAttribute('formaction') ? e.formAction : undefined,
+      e.getAttribute('formtarget'), e.getAttribute('formmethod'),
       form?.action, form?.target, form?.method, form?.enctype];
     // Never read control values or send these internal guards across the wire.
     if (fields.some(value => typeof value === 'string' && value.length > 4096)) return null;
@@ -134,20 +139,13 @@ function onPage(method, expectedOrigin, expectedUrl, snapshot, args) {
     return true;
   }
 
-  function sameDestination(href, target) {
-    if (target && target.toLowerCase() !== '_self') return false;
+  function allowedDestination(href) {
     try {
-      const url = new URL(href, location.href);
-      return (url.protocol === 'http:' || url.protocol === 'https:') && url.origin === expectedOrigin && !url.username && !url.password;
+      const url = new URL(href, document.baseURI);
+      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.port && !url.username && !url.password;
     } catch {
       return false;
     }
-  }
-
-  if (method === 'navigate') {
-    if (!sameDestination(args.url)) return null;
-    location.assign(args.url);
-    return true;
   }
 
   const e = snapshot.elements[args.index];
@@ -165,10 +163,9 @@ function onPage(method, expectedOrigin, expectedUrl, snapshot, args) {
   }
   if (method === 'click' && !(e instanceof HTMLLabelElement)) {
     const anchor = e.closest('a[href]');
-    const baseTarget = document.querySelector('base[target]')?.target;
-    if (anchor && (anchor.hasAttribute('download') || !sameDestination(anchor.href, anchor.target || baseTarget))) return null;
-    if (e.form && e.type === 'submit' && !sameDestination(e.getAttribute('formaction') ?? e.form.action,
-      e.formTarget || e.form.target || baseTarget)) return null;
+    // Guard declarative destinations only. Scripts, redirects and responses still follow Chromium and the broker's policies.
+    if (anchor && (anchor.hasAttribute('download') || !allowedDestination(anchor.href))) return null;
+    if (e.form && e.type === 'submit' && !allowedDestination(e.hasAttribute('formaction') ? e.formAction : e.form.action)) return null;
     e.click();
     return true;
   }
@@ -179,44 +176,35 @@ export function createAutomation(browser) {
   const pageState = new WeakMap();
   const documents = new Map();
 
-  async function tabs(origin) {
-    const pages = await browser.defaultBrowserContext().pages();
-    const scoped = [];
-    for (const page of pages) {
-      const url = page.url();
-      if (webUrl(url)?.origin !== origin) continue;
-      let observed = pageState.get(page);
-      if (!observed) {
-        observed = { tabId: randomUUID(), revision: 0 };
-        pageState.set(page, observed);
-        const { tabId } = observed;
-        const clear = () => {
-          const state = documents.get(tabId);
-          documents.delete(tabId);
-          void state?.snapshot.dispose().catch(() => {});
-        };
-        page.on('framenavigated', frame => {
-          if (frame === page.mainFrame()) {
-            observed.revision++;
-            clear();
-          }
-        });
-        page.once('close', clear);
+  function observe(page) {
+    const previous = pageState.get(page);
+    if (previous) return previous;
+    const observed = { tabId: randomUUID(), revision: 0 };
+    pageState.set(page, observed);
+    const { tabId } = observed;
+    const clear = () => {
+      const state = documents.get(tabId);
+      documents.delete(tabId);
+      void state?.snapshot.dispose().catch(() => {});
+    };
+    page.on('framenavigated', frame => {
+      if (frame === page.mainFrame()) {
+        observed.revision++;
+        clear();
       }
-      scoped.push({ page, tabId: observed.tabId, revision: observed.revision, url });
-      if (scoped.length === LIMIT_TABS) break;
-    }
-    return scoped;
+    });
+    page.once('close', clear);
+    return observed;
   }
 
-  async function inspect(tab, realm, origin, signal) {
+  async function inspect(tab, realm, signal) {
     const previous = documents.get(tab.tabId);
     let sameDocument = false;
     if (previous?.url === tab.url) {
-      sameDocument = await realm.evaluate(onPage, 'document', origin, tab.url, previous.snapshot, {}).catch(() => false);
+      sameDocument = await realm.evaluate(onPage, 'document', tab.url, previous.snapshot, {}).catch(() => false);
     }
     signal.throwIfAborted();
-    const snapshot = await realm.evaluateHandle(onPage, 'snapshot', origin, tab.url, null, {});
+    const snapshot = await realm.evaluateHandle(onPage, 'snapshot', tab.url, null, {});
     try {
       const observed = await realm.evaluate(value => value && ({ text: value.text, rows: value.rows }), snapshot);
       if (!observed || tab.page.url() !== tab.url || pageState.get(tab.page)?.revision !== tab.revision) return null;
@@ -237,73 +225,61 @@ export function createAutomation(browser) {
     }
   }
 
-  async function guardedNavigate(page, origin, action, signal) {
-    const intercept = req => {
-      if (req.isInterceptResolutionHandled()) return;
-      const frame = req.frame();
-      const permitted = !req.isNavigationRequest() || (frame && (frame !== page.mainFrame() || webUrl(req.url())?.origin === origin));
-      void (permitted ? req.continue() : req.abort('blockedbyclient')).catch(() => {});
-    };
-    page.on('request', intercept);
-    try {
-      await page.setRequestInterception(true);
-      signal.throwIfAborted();
-      // Install the watcher before triggering the document action, including same-document navigation.
-      const navigated = page.waitForNavigation({ waitUntil: 'domcontentloaded', timeout: TIMEOUT_NAVIGATION, signal }).catch(() => false);
-      if (!await action()) return false;
-      return (await navigated) !== false;
-    } finally {
-      await page.setRequestInterception(false).catch(() => {});
-      page.off('request', intercept);
-    }
+  function actionResult(page, tabId, signal) {
+    signal.throwIfAborted();
+    const url = page.url();
+    if (!webUrl(url)) throw new AutomationError('Tab is no longer on a supported webpage');
+    return { tabId, url };
   }
 
   return async (request, signal) => {
     if (!validate(request)) throw new AutomationError('Invalid automation request');
     signal.throwIfAborted();
-    const available = await tabs(request.origin);
+    const pages = await browser.defaultBrowserContext().pages();
     signal.throwIfAborted();
     if (request.method === 'list') {
       const listed = [];
       let budget = 24_000;
-      for (const { tabId, url } of available) {
+      for (const page of pages) {
+        const url = page.url();
+        if (!webUrl(url) && !startingUrl(url)) continue;
+        const { tabId } = observe(page);
         budget -= JSON.stringify({ tabId, url }).length + 1;
         if (budget < 0) break;
         listed.push({ tabId, url });
+        if (listed.length === LIMIT_TABS) break;
       }
       return { tabs: listed };
     }
-    const tab = available.find(candidate => candidate.tabId === request.tabId);
-    if (!tab) throw new AutomationError('Tab is outside the authorized origin');
-    const realm = tab.page.mainFrame().isolatedRealm();
-    if (request.method === 'inspect') {
-      const result = await inspect(tab, realm, request.origin, signal);
-      if (!result) throw new AutomationError('Tab is not visible or changed');
+    const { method, tabId } = request;
+    const page = pages.find(candidate => pageState.get(candidate)?.tabId === tabId);
+    if (!page) throw new AutomationError('Tab is unavailable');
+    const url = page.url();
+    if (!webUrl(url) && !(method === 'navigate' && startingUrl(url))) {
+      throw new AutomationError('Tab is not on a supported webpage');
+    }
+    if (method === 'navigate') {
+      await page.goto(request.url, { waitUntil: 'domcontentloaded', timeout: TIMEOUT_NAVIGATION });
+      return actionResult(page, tabId, signal);
+    }
+    const revision = pageState.get(page).revision;
+    const realm = page.mainFrame().isolatedRealm();
+    if (method === 'inspect') {
+      const result = await inspect({ page, tabId, revision, url }, realm, signal);
+      if (!result) throw new AutomationError('Tab changed during inspection');
       return result;
     }
-    const state = documents.get(tab.tabId);
-    if (!state || state.documentId !== request.documentId || state.url !== tab.url) throw new AutomationError('Document reference is stale');
+    const state = documents.get(tabId);
+    if (!state || state.documentId !== request.documentId || state.url !== url) throw new AutomationError('Document reference is stale');
     const args = { ...request };
     if (request.elementId) {
       args.index = state.elements.findIndex(({ id }) => id === request.elementId);
       if (args.index < 0) throw new AutomationError('Element reference is stale');
     }
-    const action = () => {
-      signal.throwIfAborted();
-      if (pageState.get(tab.page)?.revision !== tab.revision || documents.get(tab.tabId) !== state) return false;
-      return realm.evaluate(onPage, request.method, request.origin, tab.url, state.snapshot, args);
-    };
-    const acted = request.method === 'navigate' ? await guardedNavigate(tab.page, request.origin, action, signal) : await action();
+    signal.throwIfAborted();
+    const acted = await realm.evaluate(onPage, method, url, state.snapshot, args);
     signal.throwIfAborted();
     if (!acted) throw new AutomationError('Document or element no longer permits that action');
-    const url = tab.page.url();
-    if (webUrl(url)?.origin !== request.origin) throw new AutomationError('Tab left the authorized origin');
-    const revision = pageState.get(tab.page).revision;
-    if (url !== state.url || revision !== tab.revision || request.method === 'navigate') {
-      const next = await inspect({ ...tab, url, revision }, tab.page.mainFrame().isolatedRealm(), request.origin, signal);
-      if (!next) throw new AutomationError('Tab changed after the action');
-      return { tabId: tab.tabId, url: next.url, documentId: next.documentId };
-    }
-    return { tabId: tab.tabId, url, documentId: state.documentId };
+    return actionResult(page, tabId, signal);
   };
 }

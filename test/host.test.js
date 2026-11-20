@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
+import { on, once } from 'node:events';
+import { createServer } from 'node:http';
 import test from 'node:test';
+import { WebSocket } from 'ws';
 import { createAgent, parseAction } from '../src/host/agent.js';
 import { isPublicIPv4, resolvePublicIPv4 } from '../src/host/egress.js';
-import { apply, inject } from '../src/host/index.js';
+import { apply, Config, inject } from '../src/host/index.js';
 import { createPool } from '../src/host/pool.js';
 import { registerWeb } from '../src/host/web.js';
-import { API, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION } from '../src/shared/protocol.js';
+import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER } from '../src/shared/protocol.js';
 
 const origin = 'https://example.com';
 
@@ -30,13 +33,16 @@ test('runner is shared only within a workspace; tickets are peer-bound and singl
     return { ready: Promise.resolve(), stop: async () => { stops.push(id); } };
   });
   t.after(() => pool.dispose());
-  const [key1, key2, key3] = await Promise.all([pool.issue('s1', 'owner'), pool.issue('s2', 'owner'), pool.issue('s3', 'owner')]);
+  const [first, second, third] = await Promise.all([pool.issue('s1', 'owner'), pool.issue('s2', 'owner'), pool.issue('s3', 'owner')]);
   assert.deepEqual(startups, ['a', 'b']);
-  assert.equal(pool.redeem(key1, 'other-peer'), null);
-  const a1 = pool.redeem(key1, 'owner');
-  const a2 = pool.redeem(key2, 'owner');
-  const b = pool.redeem(key3, 'owner');
-  assert.equal(pool.redeem(key1, 'owner'), null);
+  assert.equal(first.runId, second.runId);
+  assert.equal(first.generation, second.generation);
+  assert.notEqual(first.runId, third.runId);
+  assert.equal(pool.redeem(first.ticket, 'other-peer'), null);
+  const a1 = pool.redeem(first.ticket, 'owner');
+  const a2 = pool.redeem(second.ticket, 'owner');
+  const b = pool.redeem(third.ticket, 'owner');
+  assert.equal(pool.redeem(first.ticket, 'owner'), null);
   assert.equal(a1.runner, a2.runner);
   assert.notEqual(a1.runner, b.runner);
   assert.equal(pool.findSession('s1'), rows.get('a'));
@@ -73,7 +79,7 @@ test('view request rejects legacy bodies and unresolved Sessions without startin
   }, pool, {});
   t.after(async () => { dispose(); await pool.dispose(); });
 
-  async function request(payload) {
+  async function request(payload, path = '/view') {
     let response;
     const req = {
       method: 'POST', socket: { remoteAddress: '127.0.0.1' },
@@ -84,7 +90,7 @@ test('view request rejects legacy bodies and unresolved Sessions without startin
       writeHead(status) { response = { status }; },
       end(data) { response.body = JSON.parse(data); },
     };
-    await routes.get(`${API}/view`)(req, res);
+    await routes.get(`${API}${path}`)(req, res);
     return response;
   }
 
@@ -104,7 +110,24 @@ test('view request rejects legacy bodies and unresolved Sessions without startin
   assert.equal(success.status, 200);
   assert.equal(success.body.ok, true);
   assert.match(success.body.ticket, /^[A-Za-z0-9_-]{43}$/);
-  assert.deepEqual(startups, ['a']);
+  const { runId, generation } = success.body;
+  for (const id of [runId, generation]) assert.match(id, /^[0-9a-f-]{36}$/);
+  const identity = { sessionId: 'valid', runId };
+  const binding = { ...identity, generation };
+  assert.equal((await request(binding)).body.runId, runId);
+  assert.equal((await request(identity)).body.code, 'invalid_body');
+  assert.equal((await request({ ...binding, generation: 'bad/id' })).body.code, 'invalid_body');
+  assert.deepEqual((await request(identity, '/browser/status')).body, { ok: true, state: 'ready', generation });
+  assert.equal((await request(binding, '/browser/status')).body.code, 'invalid_body');
+  const restarted = (await request(binding, '/browser/restart')).body;
+  assert.equal(restarted.state, 'restarting');
+  assert.notEqual(restarted.generation, generation);
+  assert.equal((await request(binding, '/browser/close')).body.code, 'browser_generation_changed');
+  assert.deepEqual((await request({ ...identity, generation: restarted.generation }, '/browser/close')).body, { ok: true, state: 'closed' });
+  assert.deepEqual((await request(identity, '/browser/status')).body, { ok: true, state: 'closed' });
+  const count = startups.length;
+  assert.equal((await request(binding)).body.code, 'browser_closed');
+  assert.equal(startups.length, count);
 });
 
 test('Desktop forwarding accepts only loopback marked JSON POSTs from the authenticated owner', async (t) => {
@@ -133,9 +156,22 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
       assert.equal(session, 'blank');
       assert.equal(peer, owner.id);
       issued++;
-      return 'test-ticket';
+      return { ticket: 'test-ticket', runId: 'test-run', generation: 'test-generation' };
     },
-  }, { status: (id) => ({ provider: 'disabled', workspaceId: id }) });
+  }, {
+    status(sessionId) {
+      assert.equal(sessionId, 'blank');
+      return { provider: 'enabled', canGrant: false, access: null };
+    },
+    grant(sessionId) {
+      assert.equal(sessionId, 'blank');
+      return { provider: 'enabled', canGrant: true, access: { sessionId } };
+    },
+    revoke(sessionId) {
+      assert.equal(sessionId, 'blank');
+      return { provider: 'enabled', canGrant: true, access: null };
+    },
+  });
   t.after(dispose);
 
   const desktop = { host: '127.0.0.1:4321', 'content-type': 'application/json',
@@ -182,11 +218,22 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
     assert.equal(body.code, 'access_denied');
   }
   assert.equal(issued, 0);
-  assert.deepEqual((await request()).body, { ok: true, ticket: 'test-ticket' });
-  assert.deepEqual((await request({ path: '/agent/status', value: { workspaceId: 'a' } })).body,
-    { ok: true, provider: 'disabled', workspaceId: 'a' });
+  const expectedView = { ok: true, ticket: 'test-ticket', runId: 'test-run', generation: 'test-generation' };
+  assert.deepEqual((await request()).body, expectedView);
+  assert.deepEqual((await request({ path: '/agent/status' })).body,
+    { ok: true, provider: 'enabled', canGrant: false, access: null });
+  assert.deepEqual((await request({ path: '/agent/grant' })).body,
+    { ok: true, provider: 'enabled', canGrant: true, access: { sessionId: 'blank' } });
+  assert.deepEqual((await request({ path: '/agent/revoke' })).body,
+    { ok: true, provider: 'enabled', canGrant: true, access: null });
+  assert.equal((await request({ path: '/agent/grant', headers: { cookie: undefined } })).body.code, 'access_denied');
+  for (const [path, value] of [
+    ['/agent/status', { workspaceId: 'a' }], ['/agent/revoke', { sessionId: 'blank', workspaceId: 'a' }],
+    ['/agent/grant', { sessionId: 'blank', origin }],
+  ]) assert.equal((await request({ path, value })).body.code, 'invalid_body');
+  assert.equal(routes.has(`${API}/agent/decision`), false);
   assert.deepEqual((await request({ headers: { origin: 'http://127.0.0.1:4321',
-    [DESKTOP_REQUEST_HEADER]: undefined, 'sec-fetch-site': 'same-origin' } })).body, { ok: true, ticket: 'test-ticket' });
+    [DESKTOP_REQUEST_HEADER]: undefined, 'sec-fetch-site': 'same-origin' } })).body, expectedView);
   assert.equal(issued, 2);
 });
 
@@ -207,7 +254,7 @@ test('Session changing workspace while runner starts cannot obtain a ticket for 
   resolve();
   await rejected;
   assert.deepEqual(startups, ['a']);
-  const seat = pool.redeem(await pool.issue('moving', 'owner'), 'owner');
+  const seat = pool.redeem((await pool.issue('moving', 'owner')).ticket, 'owner');
   assert.equal(seat.isCurrent(), true);
   assert.deepEqual(startups, ['a', 'b']);
 });
@@ -218,7 +265,7 @@ test('redemption rechecks Session ownership and consumes the stale ticket', asyn
     ready: Promise.resolve(), stop: async () => {},
   }));
   t.after(() => pool.dispose());
-  const key = await pool.issue('moving', 'owner');
+  const { ticket: key } = await pool.issue('moving', 'owner');
   rows.get('a').sessionIds = [];
   rows.get('b').sessionIds = ['moving'];
   assert.equal(pool.redeem(key, 'owner'), null);
@@ -227,18 +274,201 @@ test('redemption rechecks Session ownership and consumes the stale ticket', asyn
   assert.equal(pool.redeem(key, 'owner'), null);
 });
 
-test('action parser rejects another origin, unexpected controls and unsafe fill', () => {
-  const base = { tabId: 'tab', documentId: 'doc' };
-  assert.equal(parseAction({ ...base, action: 'navigate', url: `${origin}/about` }, origin).url, `${origin}/about`);
-  assert.throws(() => parseAction({ ...base, action: 'navigate', url: 'https://example.org/' }, origin));
-  assert.throws(() => parseAction({ action: 'list', workspaceId: 'elsewhere' }, origin));
-  assert.throws(() => parseAction({ ...base, action: 'fill', elementId: 'field', text: 'line\nbreak' }, origin));
+test('restart fences old tickets and sockets; close during draining prevents replacement', async (t) => {
+  const row = { id: 'w', sessionIds: ['one', 'two'] };
+  const stopping = Promise.withResolvers();
+  const launched = [];
+  const pool = createPool({ list: () => [row], get: () => row }, (_id, onExit) => {
+    launched.push(onExit);
+    return { ready: Promise.resolve(), stop: () => stopping.promise };
+  });
+  t.after(async () => { stopping.resolve(); await pool.dispose(); });
+  const { runId, generation, ticket } = await pool.issue('one', 'owner');
+  const lingering = await pool.issue('two', 'owner', runId, generation);
+  const owners = [];
+  const joined = pool.redeem(ticket, 'owner', {
+    onResizeOwner: (enabled) => owners.push(enabled), onClose: () => owners.push('closed'),
+  });
+  const replacement = pool.restart('two', runId, generation);
+  assert.equal(replacement.state, 'restarting');
+  assert.notEqual(replacement.generation, generation);
+  assert.deepEqual(owners, [true, 'closed']);
+  assert.equal(joined.isCurrent(), false);
+  assert.equal(pool.redeem(lingering.ticket, 'owner'), null);
+  await assert.rejects(pool.issue('one', 'owner', runId, generation), { code: 'browser_generation_changed' });
+  assert.throws(() => pool.restart('two', runId, replacement.generation), { code: 'browser_busy' });
+  launched[0](new Error('delayed old generation callback'));
+  await Promise.resolve();
+  assert.deepEqual(pool.status('two', runId), replacement);
+  assert.equal(launched.length, 1);
+  const waiting = assert.rejects(pool.issue('two', 'owner', runId, replacement.generation), { code: 'browser_closed' });
+  assert.deepEqual(pool.close('one', runId, replacement.generation), { state: 'closed' });
+  await waiting;
+  await assert.rejects(pool.issue('one', 'owner'), { code: 'runner_limit' });
+  await assert.rejects(pool.issue('one', 'owner', runId, replacement.generation), { code: 'browser_closed' });
+  stopping.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(launched.length, 1);
+  const fresh = await pool.issue('one', 'owner');
+  assert.notEqual(fresh.runId, runId);
+  assert.deepEqual(pool.status('one', runId), { state: 'closed' });
 });
 
-test('manual browser endpoints register without Browser Use or tools', async () => {
+test('failed replacement is retryable, but post-ready exit and membership loss are terminal for a binding', async (t) => {
+  const row = { id: 'w', sessionIds: ['one', 'two'] };
+  const launched = [];
+  const pool = createPool({ list: () => [row], get: () => row }, (_id, onExit) => {
+    const index = launched.push(onExit) - 1;
+    const ready = index === 1 ? Promise.reject(new BrowserError('runner_profile_recovery_failed', 'private detail', 503)) : Promise.resolve();
+    return { ready, stop: async () => {} };
+  });
+  t.after(() => pool.dispose());
+  const first = await pool.issue('one', 'owner');
+  const failed = pool.restart('one', first.runId, first.generation);
+  await assert.rejects(pool.issue('two', 'owner', first.runId, failed.generation), { code: 'runner_profile_recovery_failed' });
+  assert.deepEqual(await pool.issue('two', 'owner'), {
+    runId: first.runId, generation: failed.generation, state: 'failed', code: 'runner_profile_recovery_failed',
+  });
+  const recovered = pool.restart('two', first.runId, failed.generation);
+  const retry = await pool.issue('one', 'owner', first.runId, recovered.generation);
+  assert.equal(retry.runId, first.runId);
+  assert.notEqual(retry.generation, failed.generation);
+  row.sessionIds = ['two'];
+  assert.deepEqual(pool.status('one', first.runId), { state: 'closed' });
+  await assert.rejects(pool.issue('one', 'owner', first.runId, retry.generation), { code: 'browser_closed' });
+  launched[0]();
+  await Promise.resolve();
+  assert.equal(pool.status('two', first.runId).state, 'ready');
+  launched[2]();
+  await Promise.resolve();
+  assert.deepEqual(pool.status('two', first.runId), { state: 'closed' });
+  await assert.rejects(pool.issue('two', 'owner', first.runId, retry.generation), { code: 'browser_closed' });
+  assert.equal(launched.length, 3);
+});
+
+test('restarting after a rejected stop retries cleanup before launching', async (t) => {
+  const row = { id: 'w', sessionIds: ['one'] };
+  let starts = 0;
+  let stops = 0;
+  const pool = createPool({ list: () => [row], get: () => row }, () => {
+    const index = ++starts;
+    return { ready: Promise.resolve(), async stop() {
+      if (index === 1 && ++stops === 1) throw new Error('private cleanup error');
+    } };
+  });
+  t.after(() => pool.dispose());
+  const { runId, generation } = await pool.issue('one', 'owner');
+  const failed = pool.restart('one', runId, generation);
+  await assert.rejects(pool.issue('one', 'owner', runId, failed.generation), { code: 'runner_start_failed' });
+  assert.equal(starts, 1);
+  const retry = pool.restart('one', runId, failed.generation);
+  await pool.issue('one', 'owner', runId, retry.generation);
+  assert.equal(starts, 2);
+  assert.equal(stops, 2);
+});
+
+test('display ownership transfers to the oldest remaining seat; idle status polls do not revive a run', async (t) => {
+  t.mock.timers.enable({ apis: ['Date', 'setInterval'] });
+  const row = { id: 'w', sessionIds: ['one', 'two', 'three'] };
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({ ready: Promise.resolve(), stop: async () => {} }));
+  t.after(() => pool.dispose());
+  const phases = [];
+  const first = await pool.issue('one', 'owner');
+  const seats = [];
+  for (const id of row.sessionIds) {
+    const { ticket } = id === 'one' ? first : await pool.issue(id, 'owner', first.runId, first.generation);
+    seats.push(pool.redeem(ticket, 'owner', { onResizeOwner: (enabled) => phases.push([id, enabled]) }));
+  }
+  assert.deepEqual(phases, [['one', true], ['two', false], ['three', false]]);
+  seats[0].release();
+  assert.deepEqual(phases.at(-1), ['two', true]);
+  seats[1].release();
+  assert.deepEqual(phases.at(-1), ['three', true]);
+  seats[2].release();
+  t.mock.timers.tick(60_000);
+  assert.equal(pool.status('one', first.runId).state, 'ready');
+  t.mock.timers.tick(61_000);
+  assert.deepEqual(pool.status('one', first.runId), { state: 'closed' });
+  await assert.rejects(pool.issue('one', 'owner', first.runId, first.generation), { code: 'browser_closed' });
+});
+
+test('stream announces ownership only after ticket redemption and leaves RFB binary', { timeout: 5_000 }, async (t) => {
+  const row = { id: 'w', sessionIds: ['one', 'two'] };
+  const streams = [];
+  const received = Promise.withResolvers();
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({
+    ready: Promise.resolve(), stop: async () => {},
+    attach(view) {
+      streams.push(view);
+      return { send: (data) => { received.resolve(data); return true; }, close() {} };
+    },
+  }));
+  const server = createServer();
+  const owner = { id: 'owner', principal: { kind: 'owner' }, signal: new AbortController().signal };
+  const dispose = registerWeb({
+    connection: { browserPeer: owner, admit: () => ({ peer: owner }) },
+    webServer: {
+      register: () => () => {},
+      registerUpgrade({ handler }) { server.on('upgrade', handler); return () => server.off('upgrade', handler); },
+    },
+  }, pool, {});
+  t.after(async () => {
+    dispose();
+    await pool.dispose();
+    if (server.listening) await new Promise((resolve) => server.close(resolve));
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const address = `127.0.0.1:${server.address().port}`;
+  const connect = async (sessionId) => {
+    const { ticket } = await pool.issue(sessionId, owner.id);
+    const ws = new WebSocket(`ws://${address}${API}/stream`, { origin: `http://${address}` });
+    const messages = on(ws, 'message', { signal: t.signal });
+    await once(ws, 'open');
+    assert.equal(streams.length, sessionId === 'one' ? 0 : 1);
+    ws.send(JSON.stringify({ ticket }));
+    return { ws, messages };
+  };
+  const expectOwner = async (messages, enabled) => {
+    const { value: [data, binary] } = await messages.next();
+    assert.equal(binary, false);
+    assert.deepEqual(JSON.parse(data), { type: RESIZE_OWNER, enabled });
+  };
+  const leader = await connect('one');
+  await expectOwner(leader.messages, true);
+  const follower = await connect('two');
+  await expectOwner(follower.messages, false);
+  const rfb = Buffer.from([0, 128, 255]);
+  streams[1].send(rfb);
+  assert.deepEqual((await follower.messages.next()).value, [rfb, true]);
+  follower.ws.send(rfb);
+  assert.deepEqual(await received.promise, rfb);
+  // Client-supplied text after admission cannot become an RFB frame or control message.
+  leader.ws.send(JSON.stringify({ type: RESIZE_OWNER, enabled: false }));
+  await once(leader.ws, 'close');
+  await expectOwner(follower.messages, true);
+  await leader.messages.return();
+  await follower.messages.return();
+});
+
+test('navigation needs only a tab and an HTTP(S) URL, without an origin grant or document reference', () => {
+  for (const url of ['https://example.com/about', 'https://example.org/']) {
+    assert.deepEqual(parseAction({ tabId: 'tab', action: 'navigate', url }), { method: 'navigate', tabId: 'tab', url });
+  }
+  for (const url of ['chrome://settings/', 'file:///profile', 'https://example.org:9000/', 'https://user@example.org/']) {
+    assert.throws(() => parseAction({ tabId: 'tab', action: 'navigate', url }), { code: 'invalid_action' });
+  }
+  assert.throws(() => parseAction({ action: 'list', workspaceId: 'elsewhere' }), { code: 'invalid_action' });
+  assert.throws(() => parseAction({ action: 'fill', tabId: 'tab', documentId: 'doc', elementId: 'field', text: 'line\nbreak' }), { code: 'invalid_action' });
+});
+
+test('the agent integration defaults on, but manual browser endpoints do not wait for tools', async () => {
   const routes = new Set();
   const register = ({ path }) => { routes.add(path); return () => routes.delete(path); };
-  for (const agentEnabled of [false, true]) {
+  for (const [options, agentEnabled] of [[{}, true], [{ agentEnabled: false }, false]]) {
+    const config = Config(options);
+    assert.equal(config.agentEnabled, agentEnabled);
+    let injectionCount = 0;
     let dispose;
     const ctx = {
       workspaceRegistry: {},
@@ -246,32 +476,40 @@ test('manual browser endpoints register without Browser Use or tools', async () 
       webServer: { register, registerUpgrade: register },
       effect(setup) { dispose = setup(); },
       inject(services) {
-        assert.equal(agentEnabled, true);
-        assert.deepEqual(services, ['browserUse', 'tools']);
-        return { dispose() {} }; // Agent services never become available.
+        injectionCount++;
+        assert.deepEqual(services, ['tools']);
+        return { dispose() {} }; // The tool registry never becomes available.
       },
     };
     assert.deepEqual(inject, ['workspaceRegistry', 'connection', 'webServer']);
-    apply(ctx, { agentEnabled });
+    apply(ctx, config);
     try {
-      assert.ok(routes.has(`${API}/view`));
-      assert.ok(routes.has(`${API}/stream`));
+      assert.equal(injectionCount, agentEnabled ? 1 : 0);
+      assert.ok(routes.has('/dsh-browser/v2/view'));
+      assert.ok(routes.has('/dsh-browser/v2/browser/status'));
+      assert.ok(routes.has('/dsh-browser/v2/stream'));
+      assert.ok(!routes.has('/dsh-browser/v1/view'));
     } finally { await dispose(); }
     assert.equal(routes.size, 0);
   }
 });
 
-test('only the bound Session can use the visible runner and mutations require a decision', async (t) => {
+test('Session grants work before the display connects and last until revoked or the runner changes', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
   let tool;
   let activate;
   let deactivate;
-  let releases = 0;
+  let unregisters = 0;
   const ctx = {
     inject(services, setup) {
-      assert.deepEqual(services, ['browserUse', 'tools']);
-      activate = () => { deactivate = setup({
-        browserUse: { register: () => async () => { releases++; } },
-        tools: { register(value) { tool = value; return () => { tool = undefined; }; } },
+      assert.deepEqual(services, ['tools']);
+      activate = (collision = false) => { deactivate = setup({
+        tools: { register(value) {
+          assert.equal(value.name, 'browser');
+          if (collision) throw new Error('tool "browser" is already registered');
+          tool = value;
+          return () => { tool = undefined; unregisters++; };
+        } },
       }); };
       return { async dispose() {
         const cleanup = deactivate;
@@ -282,52 +520,95 @@ test('only the bound Session can use the visible runner and mutations require a 
   };
   const requests = [];
   const row = { id: 'w', sessionIds: ['s', 'other'] };
+  const launch = Promise.withResolvers();
+  const replacement = Promise.withResolvers();
+  const readiness = [launch.promise, replacement.promise];
   const pool = createPool({ get: (id) => id === row.id ? row : undefined, list: () => [row] }, () => ({
-    ready: Promise.resolve(), stop: async () => {},
-    async automation(request) {
+    ready: readiness.shift() ?? Promise.resolve(), stop: async () => {},
+    async automation(request, signal) {
       requests.push(request);
-      return request.method === 'inspect'
-        ? { tabId: 'tab', documentId: 'doc', url: 'https://93.184.215.14/', elements: [{ id: 'link', role: 'link', label: 'About' }] }
-        : { ok: true };
+      if (request.method === 'click') {
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => {
+          reject(new BrowserError('action_cancelled', 'Cancelled', 409));
+        }, { once: true }));
+      }
+      return { ok: true };
     },
   }));
   const agent = createAgent(ctx, pool, true);
   t.after(async () => { agent.stopAdmission(); await pool.dispose(); await agent.dispose(); });
-  const view = pool.redeem(await pool.issue('s', 'owner'), 'owner');
-  assert.equal(agent.status('w').provider, 'disabled');
+  assert.deepEqual(agent.status('s'), { provider: 'disabled', canGrant: false, access: null });
+  activate(true);
+  assert.equal(agent.status('s').provider, 'conflict');
+  assert.throws(() => agent.grant('s'), { code: 'agent_access_denied' });
   assert.equal(tool, undefined);
+  deactivate();
   activate();
-  const run = (id, args) => tool.execute(args, { agent: { id }, signal: new AbortController().signal });
-  await assert.rejects(run('s', { action: 'list' }), { code: 'agent_access_denied' });
-  await agent.grant('w', 's', 'https://93.184.215.14');
-  await assert.rejects(run('other', { action: 'list' }), { code: 'agent_access_denied' });
-  await run('s', { action: 'inspect', tabId: 'tab' });
+  const run = (id, args = { action: 'list' }) => tool.execute(args, { agent: { id }, signal: new AbortController().signal });
+  assert.deepEqual(agent.status('s'), { provider: 'enabled', canGrant: false, access: null });
+  assert.throws(() => agent.grant('s'), { code: 'browser_not_ready' });
+  const ticket = pool.issue('s', 'owner');
+  assert.deepEqual(agent.status('s'), { provider: 'enabled', canGrant: true, access: null });
+  await assert.rejects(run('s'), { code: 'agent_access_denied' });
+  assert.deepEqual(agent.grant('s'), { provider: 'enabled', canGrant: true, access: { sessionId: 's' } });
+  await assert.rejects(run('s'), { code: 'browser_not_ready' });
+  assert.deepEqual(requests, []);
+  launch.resolve();
+  const binding = await ticket;
+  const view = pool.redeem(binding.ticket, 'owner');
+  assert.equal(view.isCurrent(), true);
+  view.release();
+  assert.equal(agent.status('s').access.sessionId, 's');
+  assert.equal(agent.status('other').access, null);
+  await assert.rejects(run('other'), { code: 'agent_access_denied' });
+  for (const url of ['https://example.com/', 'https://example.org/']) {
+    assert.deepEqual(await run('s', { action: 'navigate', tabId: 'tab', url }), { ok: true });
+    assert.deepEqual(requests.at(-1), { method: 'navigate', tabId: 'tab', url });
+  }
+
   const click = { action: 'click', tabId: 'tab', documentId: 'doc', elementId: 'link' };
-  const denied = run('s', click);
-  assert.equal(requests.length, 1);
-  agent.decide('w', agent.status('w').pending.id, false);
-  await assert.rejects(denied, { code: 'approval_denied' });
-  const allowed = run('s', click);
-  assert.equal(requests.length, 1);
-  agent.decide('w', agent.status('w').pending.id, true);
-  await allowed;
-  assert.equal(requests.length, 2);
-  await run('s', { action: 'inspect', tabId: 'tab' });
-  const pending = run('s', click);
-  const canceled = assert.rejects(pending, { code: 'approval_denied' });
+  const cancelled = () => assert.rejects(run('s', click), { code: 'action_cancelled' });
+  let interrupted = cancelled();
+  assert.deepEqual(requests.at(-1), { method: 'click', tabId: 'tab', documentId: 'doc', elementId: 'link' });
+  agent.grant('other');
+  await assert.rejects(run('other'), { code: 'browser_busy' });
+  assert.equal(agent.revoke('s').access, null);
+  await interrupted;
+  await assert.rejects(run('s'), { code: 'agent_access_denied' });
+  assert.deepEqual(await run('other'), { ok: true });
+
+  agent.grant('s');
+  interrupted = cancelled();
+  row.sessionIds = ['other'];
+  await assert.rejects(run('s'), { code: 'agent_access_denied' });
+  t.mock.timers.tick(1000);
+  await interrupted;
+  row.sessionIds.push('s');
+  assert.equal(agent.status('s').access, null);
+
+  agent.grant('s');
+  interrupted = cancelled();
+  const restarted = pool.restart('other', binding.runId, binding.generation);
+  await interrupted;
+  assert.equal(agent.status('other').access, null);
+  assert.equal(agent.status('s').access, null);
+  assert.equal(agent.grant('s').access.sessionId, 's');
+  await assert.rejects(run('s'), { code: 'browser_not_ready' });
+  const replacementFailed = assert.rejects(pool.issue('s', 'owner', binding.runId, restarted.generation), { code: 'runner_start_failed' });
+  replacement.reject(new Error('Failed to launch replacement'));
+  await replacementFailed;
+  assert.deepEqual(agent.status('s'), { provider: 'enabled', canGrant: false, access: null });
+
+  const retry = pool.restart('s', binding.runId, restarted.generation);
+  const reconnected = pool.redeem((await pool.issue('s', 'owner', binding.runId, retry.generation)).ticket, 'owner');
+  agent.grant('s');
+  interrupted = cancelled();
   const stop = deactivate;
   deactivate = undefined;
   await stop();
-  await canceled;
-  assert.equal(requests.length, 3);
-  assert.deepEqual(agent.status('w'), { provider: 'disabled', access: null, pending: null });
+  await interrupted;
+  assert.deepEqual(agent.status('s'), { provider: 'disabled', canGrant: false, access: null });
   assert.equal(tool, undefined);
-  assert.equal(releases, 1);
-  assert.equal(view.isCurrent(), true);
-
-  activate();
-  await assert.rejects(run('s', { action: 'list' }), { code: 'agent_access_denied' });
-  await agent.grant('w', 's', 'https://93.184.215.14');
-  view.release();
-  await assert.rejects(run('s', { action: 'list' }), { code: 'agent_access_denied' });
+  assert.equal(unregisters, 1);
+  assert.equal(reconnected.isCurrent(), true);
 });

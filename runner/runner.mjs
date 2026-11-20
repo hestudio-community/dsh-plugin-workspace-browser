@@ -205,7 +205,13 @@ async function setup() {
     const deskEnv = { ...process.env, DISPLAY: display, XAUTHORITY: displayAuth, HOME: '/home/dshdesk' };
 
     phase = 'X11 display readiness failed';
-    worker('Xvfb', 'gosu', ['dshdesk', 'Xvfb', display, '-screen', '0', `${width}x${height}x24`, '-nolisten', 'tcp', '-auth', displayAuth], deskEnv);
+    // Xtigervnc owns the X11 framebuffer, so a remote resize changes the maximized Chromium window.
+    // Keep unauthenticated RFB private to dshdesk and prevent X11 clients from enabling clipboard exchange.
+    worker('X11/RFB server', 'gosu', ['dshdesk', '/usr/bin/Xtigervnc', display,
+      '-geometry', `${width}x${height}`, '-depth', '24', '-noreset', '-nolisten', 'tcp', '-auth', displayAuth,
+      '-desktop', 'Chromium', '-rfbport', '-1', '-rfbunixpath', vncPath, '-rfbunixmode', '0600',
+      '-SecurityTypes', 'None', '-AlwaysShared', '-AcceptSetDesktopSize=1', '-noclipboard',
+      '-AcceptCutText=0', '-SendCutText=0', '-SendPrimary=0', '-SetPrimary=0', '-AllowOverride='], deskEnv);
     await waitFor(async () => Boolean(await exec('xdpyinfo', [], { env: deskEnv, timeout: 800 })));
     worker('window manager', 'gosu', ['dshdesk', 'openbox', '--config-file', '/app/openbox.xml'], deskEnv);
     await waitFor(async () => {
@@ -213,9 +219,6 @@ async function setup() {
       return /window id # 0x[0-9a-f]+/i.test(output);
     });
     phase = 'private RFB readiness failed';
-    // The scraping server in bookworm's TigerVNC 1.12 does not implement clipboard exchange.
-    worker('RFB server', 'gosu', ['dshdesk', '/usr/bin/X0tigervnc', '-display', display, '-desktop', 'Chromium',
-      '-rfbport', '-1', '-rfbunixpath', vncPath, '-SecurityTypes', 'None', '-AlwaysShared'], deskEnv);
     await waitFor(async () => {
       const socket = await stat(vncPath);
       return socket.isSocket() && socket.uid === deskUid && (socket.mode & 0o777) === 0o600 && await hasRfbBanner();

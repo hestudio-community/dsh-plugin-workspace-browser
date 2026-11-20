@@ -1,143 +1,119 @@
-import { publicOrigin } from '../shared/protocol.js';
 import { admissionMessage, post } from './http.js';
-import { accessBox, control, fields, row } from './styles.js';
+import { accessErrors, bar, switchControl, switchThumb, switchTrack } from './styles.js';
 
 const POLL_MS = 2000;
-const selectStyle = { ...control, display: 'block', width: '100%' };
 
 export function makeAgentAccess(React) {
-  const { createElement: h, useLayoutEffect, useRef, useState } = React;
+  const { createElement: h, Fragment, useLayoutEffect, useRef, useState } = React;
 
-  function expiry(t, value) {
-    const date = new Date(value);
-    return Number.isFinite(date.getTime())
-      ? h('div', null, t('expires'), ': ', h('time', { dateTime: date.toISOString() }, date.toLocaleString()))
-      : null;
-  }
-
-  return function AgentAccess({ workspace, t }) {
-    const { workspaceId, sessionIds } = workspace;
+  return function AgentAccess({ sessionId, tabSignal, visible, t, barRef, children }) {
     const [snapshot, setSnapshot] = useState(null);
     const [statusError, setStatusError] = useState(null);
     const [actionError, setActionError] = useState(null);
     const [busy, setBusy] = useState(false);
-    const [sessionId, setSessionId] = useState('');
-    const [origin, setOrigin] = useState('');
-    const [invalidOrigin, setInvalidOrigin] = useState(false);
     const actions = useRef(null);
 
     useLayoutEffect(() => {
+      setSnapshot(null);
+      setStatusError(null);
+      setActionError(null);
+      setBusy(false);
+      if (tabSignal.aborted) return;
       const scope = new AbortController();
+      let showing = false;
       let read;
       let timer;
       let mutating = false;
       function stopRead() {
         clearTimeout(timer);
         read?.abort();
+        read = undefined;
       }
-      function errorText(error) {
-        const key = admissionMessage(error?.code);
-        return key ? t(key) : (error?.userMessage ?? '');
+      function confirm(result) {
+        if (!['enabled', 'disabled', 'conflict'].includes(result.provider) || typeof result.canGrant !== 'boolean'
+          || (result.access !== null && typeof result.access?.sessionId !== 'string')) {
+          throw new Error('Invalid agent status');
+        }
+        setSnapshot({ sessionId, tabSignal, provider: result.provider, canGrant: result.canGrant, access: result.access });
+        setStatusError(null);
+      }
+      function schedule() {
+        if (showing && !scope.signal.aborted && !mutating) timer = setTimeout(poll, POLL_MS);
       }
       async function poll() {
-        if (scope.signal.aborted || mutating) return;
+        if (!showing || scope.signal.aborted || mutating || read) return;
         const request = new AbortController();
         read = request;
         try {
-          const result = await post('/agent/status', { workspaceId }, request.signal);
-          if (request.signal.aborted) return;
-          if (!['enabled', 'disabled', 'conflict'].includes(result.provider)) throw new Error();
-          setSnapshot(result);
-          setStatusError(null);
+          const result = await post('/agent/status', { sessionId }, request.signal);
+          if (!request.signal.aborted) confirm(result);
         } catch (error) {
-          if (request.signal.aborted) return;
-          setSnapshot(null);
-          setStatusError(errorText(error));
+          if (!request.signal.aborted) setStatusError(error);
         } finally {
-          if (!request.signal.aborted) timer = setTimeout(poll, POLL_MS);
+          if (read === request) {
+            read = undefined;
+            schedule();
+          }
         }
       }
-      async function mutate(path, body) {
-        if (scope.signal.aborted || mutating) return;
+      async function mutate(path) {
+        if (!showing || scope.signal.aborted || mutating) return;
         mutating = true;
         stopRead();
         setBusy(true);
         setActionError(null);
         try {
-          await post(path, { ...body, workspaceId }, scope.signal);
+          const result = await post(path, { sessionId }, scope.signal);
+          if (!scope.signal.aborted) confirm(result);
         } catch (error) {
-          if (!scope.signal.aborted) setActionError(errorText(error));
+          if (!scope.signal.aborted) setActionError(error);
         } finally {
           if (!scope.signal.aborted) {
-            setSnapshot(null);
             setBusy(false);
             mutating = false;
-            void poll();
+            schedule();
           }
         }
       }
-      actions.current = { mutate };
-      void poll();
-      return () => {
+      function setVisible(next) {
+        showing = next;
+        if (showing) void poll();
+        else stopRead();
+      }
+      function dispose() {
         actions.current = null;
         scope.abort();
         stopRead();
-      };
-    }, [workspaceId]);
-
-    const selected = sessionIds.includes(sessionId) ? sessionId : '';
-    const access = snapshot?.access;
-    const pending = snapshot?.pending;
-    const button = (label, onClick) => h('button', { type: 'button', style: control, disabled: busy, onClick }, t(label));
-    const mutate = (path, body) => actions.current?.mutate(path, body);
-    const grant = (event) => {
-      event.preventDefault();
-      if (busy || snapshot?.provider !== 'enabled' || access || !selected) return;
-      if (!publicOrigin(origin)) {
-        setInvalidOrigin(true);
-        return;
       }
-      void mutate('/agent/grant', { sessionId: selected, origin });
-    };
+      tabSignal.addEventListener('abort', dispose, { once: true });
+      actions.current = { mutate, setVisible };
+      return () => {
+        tabSignal.removeEventListener('abort', dispose);
+        dispose();
+      };
+    }, [sessionId, tabSignal]);
+    useLayoutEffect(() => { actions.current?.setVisible(visible); }, [sessionId, tabSignal, visible]);
 
-    return h('details', { style: accessBox },
-      h('summary', null, t('agentAccess'), h('span', { role: 'status' }, pending ? ` · ${t('pending')}` : '')),
-      h('div', { style: { ...fields, marginBlock: 8 } },
-        actionError !== null ? h('div', { role: 'alert' }, actionError || t('requestFailed')) : null,
-        statusError !== null ? h('div', { role: 'status' }, statusError || t('requestFailed')) : null,
-        !snapshot && statusError === null ? h('div', { role: 'status' }, t('loadingStatus')) : null,
-        snapshot && snapshot.provider !== 'enabled'
-          ? h('div', null, t(snapshot.provider === 'disabled' ? 'providerDisabled' : 'providerConflict')) : null,
-        access ? h('div', { style: fields },
-          h('div', null, t('session'), ': ', h('bdi', null, access.sessionId)),
-          h('div', null, t('origin'), ': ', h('bdi', null, access.origin)),
-          expiry(t, access.expiresAt),
-          h('div', null, button('revoke', () => mutate('/agent/revoke', {})))) : null,
-        pending && snapshot.provider === 'enabled' ? h('div', { key: pending.id, style: fields },
-          h('strong', null, t('pending')),
-          h('div', null, t('session'), ': ', h('bdi', null, pending.sessionId)),
-          h('div', null, t('origin'), ': ', h('bdi', null, pending.origin)),
-          h('div', null, t('action'), ': ', h('bdi', null, pending.action)),
-          h('div', { dir: 'auto', style: { whiteSpace: 'pre-wrap' } }, pending.summary),
-          expiry(t, pending.expiresAt),
-          h('div', { style: row },
-            button('deny', () => mutate('/agent/decision', { id: pending.id, allow: false })),
-            button('approve', () => mutate('/agent/decision', { id: pending.id, allow: true })))) : null,
-        snapshot?.provider === 'enabled' && !access
-          ? sessionIds.length === 0 ? h('div', null, t('noSessions')) : h('form', { onSubmit: grant, style: fields },
-            h('div', null, t('grantHelp')),
-            h('label', null, t('session'), h('select', {
-              value: selected, required: true, disabled: busy, style: selectStyle,
-              onChange: (event) => setSessionId(event.target.value),
-            }, h('option', { value: '' }, t('chooseSession')),
-            sessionIds.map((id) => h('option', { key: id, value: id }, id)))),
-            h('label', null, t('origin'), h('input', {
-              type: 'url', required: true, disabled: busy, maxLength: 512, value: origin,
-              autoCapitalize: 'none', autoComplete: 'off', spellCheck: false,
-              'aria-invalid': invalidOrigin || undefined, placeholder: 'https://example.com', style: selectStyle,
-              onChange: (event) => { setOrigin(event.target.value); setInvalidOrigin(false); },
-            })),
-            invalidOrigin ? h('div', { role: 'alert' }, t('invalidOrigin')) : null,
-            h('div', null, h('button', { type: 'submit', disabled: busy || !selected || !origin, style: control }, t('grant')))) : null));
+    const status = snapshot?.sessionId === sessionId && snapshot.tabSignal === tabSignal ? snapshot : null;
+    const checked = status?.access?.sessionId === sessionId;
+    const canToggle = visible && !tabSignal.aborted && !busy
+      && (checked || (status?.provider === 'enabled' && status.canGrant));
+    function errorText(error) {
+      const key = admissionMessage(error?.code);
+      return key ? t(key) : (error?.userMessage || t('requestFailed'));
+    }
+    const reason = statusError ? errorText(statusError)
+      : status?.provider === 'conflict' ? t('providerConflict') : null;
+    return h(Fragment, null,
+      h('div', { role: 'group', 'aria-label': t('browserControls'), tabIndex: -1, ref: barRef, style: bar },
+        children,
+        h('button', {
+          type: 'button', role: 'switch', 'aria-checked': checked, style: switchControl, disabled: !canToggle,
+          onClick() { if (canToggle) void actions.current?.mutate(checked ? '/agent/revoke' : '/agent/grant'); },
+        }, t('agentAccess'), h('span', { 'aria-hidden': true, style: switchTrack(checked) },
+          h('span', { style: switchThumb(checked) })))),
+      (reason || actionError) ? h('div', { style: accessErrors },
+        reason ? h('div', { role: 'alert' }, reason) : null,
+        actionError ? h('div', { role: 'alert' }, errorText(actionError)) : null) : null);
   };
 }

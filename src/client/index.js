@@ -1,36 +1,45 @@
 import en from '../../locale/en.json' with { type: 'json' };
 import zh from '../../locale/zh.json' with { type: 'json' };
-import { makeAgentAccess } from './agent-access.js';
 import { makeBrowserView } from './browser-view.js';
 import { panelStyle } from './styles.js';
 
 const NS = '@local/dsh-workspace-browser';
 const selectSnapshot = (snapshot) => snapshot;
-const dictionary = ({ meta, ...labels }) => ({ ...labels, title: meta.title, description: meta.description });
+const dictionary = ({ meta, ...labels }) => ({ ...labels, title: meta.title });
 
 export function makeClient({ React, RFB }) {
-  const { createElement: h } = React;
-  const AgentAccess = makeAgentAccess(React);
+  const { createElement: h, useLayoutEffect, useRef } = React;
   const BrowserView = makeBrowserView(React, RFB);
 
   function BrowserTab({ sessionId, useTabInfo, useWorkspaces, t, openWebSocket }) {
     const { tab } = useTabInfo();
     const snapshot = useWorkspaces(selectSnapshot);
-    if (!tab.visible || tab.signal.aborted) return null;
-
+    const binding = useRef(null);
+    const previous = binding.current?.signal === tab.signal && binding.current.sessionId === sessionId
+      ? binding.current : null;
     const ready = snapshot.phase === 'ready';
     const matches = ready ? snapshot.items.filter((item) => item.sessionIds.includes(sessionId)) : [];
-    if (matches.length !== 1) {
-      return h('section', { style: panelStyle, 'aria-label': t('title') },
-        h('p', { role: 'status', style: { padding: '0 12px' } },
-          t(ready ? 'sessionWorkspaceMissing' : 'loadingWorkspace')));
-    }
+    const workspaceId = matches.length === 1 ? matches[0].workspaceId : undefined;
+    const removed = ready && previous && previous.workspaceId !== workspaceId;
+    const closeTab = () => { if (!tab.signal.aborted) tab.actions.close(); };
 
-    const [workspace] = matches;
-    const key = `${sessionId}:${workspace.workspaceId}`;
-    return h('section', { style: panelStyle, 'aria-label': t('title') },
-      h(BrowserView, { key: `view:${key}`, sessionId, tabSignal: tab.signal, t, openWebSocket }),
-      h(AgentAccess, { key: `access:${key}`, workspace, t }));
+    useLayoutEffect(() => {
+      if (tab.signal.aborted) return;
+      if (removed) closeTab();
+      else if (workspaceId !== undefined && tab.visible) binding.current = { sessionId, workspaceId, signal: tab.signal };
+    });
+
+    if (tab.signal.aborted) return null;
+    const retainedWorkspace = ready ? workspaceId : previous?.workspaceId;
+    const retained = !removed && retainedWorkspace !== undefined;
+    return h('section', {
+      hidden: !tab.visible, style: tab.visible ? panelStyle : { display: 'none' }, 'aria-label': t('title'),
+    }, retained ? h(BrowserView, {
+      key: JSON.stringify([sessionId, retainedWorkspace]), sessionId, tabSignal: tab.signal, t, openWebSocket,
+      visible: tab.visible && ready, onClosed: closeTab,
+    }) : null,
+    !ready || !retained ? h('p', { role: 'status', style: { padding: '0 12px' } },
+      t(ready ? 'sessionWorkspaceMissing' : 'loadingWorkspace')) : null);
   }
 
   function apply(ctx) {
@@ -39,8 +48,9 @@ export function makeClient({ React, RFB }) {
     ctx.effect(() => ctx.sidebarRightTabs.register({
       id: NS,
       kind: 'workspace-browser',
+      keepMounted: true,
       title: () => t('title'),
-      guide: [{ id: 'open', order: 31, title: () => t('open'), description: () => t('description') }],
+      guide: [{ id: 'open', order: 31, title: () => t('open') }],
     }), 'Workspace Browser: sidebar tab');
     const openWebSocket = (path) => ctx.connection.openWebSocket(path);
     ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({

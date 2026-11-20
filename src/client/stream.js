@@ -1,8 +1,8 @@
-import { API } from '../shared/protocol.js';
+import { API, RESIZE_OWNER } from '../shared/protocol.js';
 
 // noVNC attaches to a WebSocket-shaped raw channel. Its open handler
 // must run after the ticket has been sent, not before.
-export function createStreamChannel(ticket, openWebSocket) {
+export function createStreamChannel(ticket, openWebSocket, setResizeOwner = () => {}) {
   const socket = openWebSocket(`${API}/stream`);
   if (!('binaryType' in socket)) {
     socket.close();
@@ -46,8 +46,19 @@ export function createStreamChannel(ticket, openWebSocket) {
   };
   socket.onmessage = (event) => {
     if (closing) return;
-    if (bootstrapSent && event.data instanceof ArrayBuffer) channel.onmessage?.(event);
-    else channel.close();
+    if (bootstrapSent && event.data instanceof ArrayBuffer) {
+      channel.onmessage?.(event);
+      return;
+    }
+    if (bootstrapSent && typeof event.data === 'string' && event.data.length <= 128) {
+      let control;
+      try { control = JSON.parse(event.data); } catch { /* invalid control frame */ }
+      if (control?.type === RESIZE_OWNER && typeof control.enabled === 'boolean') {
+        setResizeOwner(control.enabled);
+        return;
+      }
+    }
+    channel.close();
   };
   socket.onerror = (event) => channel.onerror?.(event);
   socket.onclose = (event) => {

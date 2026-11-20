@@ -1,12 +1,15 @@
 import { WebSocketServer } from 'ws';
-import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION } from '../shared/protocol.js';
+import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER, validId } from '../shared/protocol.js';
 
 const WS_LIMIT = 1024 * 1024;
 const BODY_LIMIT = 4096;
 const TICKET_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+const sessionFields = ['sessionId'];
+const controlFields = ['sessionId', 'runId', 'generation'];
 const methods = {
-  '/view': ['sessionId'], '/agent/status': ['workspaceId'], '/agent/grant': ['workspaceId', 'sessionId', 'origin'],
-  '/agent/revoke': ['workspaceId'], '/agent/decision': ['workspaceId', 'id', 'allow'],
+  '/view': [sessionFields, controlFields],
+  '/browser/status': [['sessionId', 'runId']], '/browser/restart': [controlFields], '/browser/close': [controlFields],
+  '/agent/status': [sessionFields], '/agent/grant': [sessionFields], '/agent/revoke': [sessionFields],
 };
 
 function localOrigin(req) {
@@ -51,7 +54,7 @@ function respond(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function body(req, keys) {
+async function body(req, shapes) {
   if (!isJsonRequest(req)) {
     throw new BrowserError('invalid_content_type', 'Expected a JSON request.', 415);
   }
@@ -66,8 +69,10 @@ async function body(req, keys) {
   let value;
   try { value = JSON.parse(Buffer.concat(buffers).toString('utf8')); }
   catch { throw new BrowserError('invalid_body', 'Invalid JSON request.'); }
-  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).length !== keys.length ||
-      !keys.every((key) => Object.hasOwn(value, key) && typeof value[key] === (key === 'allow' ? 'boolean' : 'string'))) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !shapes.some((keys) =>
+      Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key) &&
+        typeof value[key] === 'string' &&
+        (key !== 'runId' && key !== 'generation' || validId(value[key]))))) {
     throw new BrowserError('invalid_body', 'Unexpected request fields.');
   }
   return value;
@@ -94,14 +99,16 @@ export function registerWeb(ctx, pool, agent) {
       }
       const value = await body(req, fields);
       if (stopped || res.destroyed || peer.signal.aborted) return;
-      const { workspaceId } = value;
+      const { sessionId, runId, generation } = value;
       let result = {};
       switch (path) {
-        case '/view': result = { ticket: await pool.issue(value.sessionId, peer.id) }; break;
-        case '/agent/status': result = agent.status(workspaceId); break;
-        case '/agent/grant': await agent.grant(workspaceId, value.sessionId, value.origin); break;
-        case '/agent/revoke': agent.revoke(workspaceId); break;
-        case '/agent/decision': agent.decide(workspaceId, value.id, value.allow); break;
+        case '/view': result = await pool.issue(sessionId, peer.id, runId, generation); break;
+        case '/browser/status': result = pool.status(sessionId, runId); break;
+        case '/browser/restart': result = pool.restart(sessionId, runId, generation); break;
+        case '/browser/close': result = pool.close(sessionId, runId, generation); break;
+        case '/agent/status': result = agent.status(sessionId); break;
+        case '/agent/grant': result = agent.grant(sessionId); break;
+        case '/agent/revoke': result = agent.revoke(sessionId); break;
       }
       respond(res, 200, { ok: true, ...result });
     } catch (error) {
@@ -153,7 +160,13 @@ export function registerWeb(ctx, pool, agent) {
         let first;
         try { first = JSON.parse(data.toString()); } catch { terminate(); return; }
         if (!first || typeof first.ticket !== 'string' || !TICKET_PATTERN.test(first.ticket)) { terminate(); return; }
-        seat = pool.redeem(first.ticket, peer.id);
+        seat = pool.redeem(first.ticket, peer.id, {
+          onResizeOwner(enabled) {
+            if (ws.readyState !== 1 || ws.bufferedAmount > WS_LIMIT * 2) { terminate(); return; }
+            ws.send(JSON.stringify({ type: RESIZE_OWNER, enabled }), { binary: false }, (error) => { if (error) terminate(); });
+          },
+          onClose: terminate,
+        });
         if (!seat) { terminate(); return; }
         clearTimeout(expiry);
         stream = seat.runner.attach({

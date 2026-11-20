@@ -137,6 +137,24 @@ test('startup frames keep recovery and sandbox failures distinct', async () => {
   }
 });
 
+test('a ready runner exiting independently notifies the pool once and closes attached displays', async () => {
+  const engine = fakeEngine();
+  let exits = 0;
+  let displayCloses = 0;
+  const runner = engine.launcher().start('terminated', () => { exits++; });
+  await runner.ready;
+  runner.attach({ send: () => {}, close: () => { displayCloses++; } });
+  const name = key('terminated');
+  const container = engine.containers.get(name);
+  engine.containers.delete(name); // Docker --rm removes the container when the runner exits.
+  container.close(0);
+  assert.equal(exits, 1);
+  assert.equal(displayCloses, 1);
+  await runner.stop();
+  assert.equal(exits, 1);
+  assert.deepEqual(engine.stops, []);
+});
+
 test('ambiguous container lookup prevents shutdown by name or ID', async () => {
   const engine = fakeEngine({ invalidCleanup: true });
   const runner = start(engine.launcher(), 'ambiguous');
