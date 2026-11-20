@@ -4,7 +4,8 @@ LABEL dev.dsh.dsh-plugin-workspace-browser.runner-protocol="1"
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-      ca-certificates chromium fonts-liberation gosu openbox \
+      ca-certificates chromium fonts-liberation fonts-noto-core fonts-noto-cjk \
+      fonts-noto-color-emoji gosu openbox \
       tigervnc-standalone-server x11-utils xauth xfonts-base \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /usr/sbin/nologin browser \

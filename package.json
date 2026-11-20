@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-workspace-browser",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "description": "An isolated workspace Chromium sidebar for DeepSeek Harness Web and Desktop.",

@@ -84,6 +84,8 @@ After upgrading the plugin, repeat the check and build for the new version if ne
 
 Once the image is ready, open a Session in a registered workspace, expand the right sidebar, and choose **+ → Open workspace browser**. This is distinct from DSH's built-in Browser tool.
 
+To verify the Runner's bundled fallback fonts after rebuilding the image, stop the old workspace browser and reopen it without removing its profile volume. Paste `data:text/plain;charset=utf-8,English 简体中文 繁體中文 日本語かな 한글 العربية हिन्दी ไทย 😀` into Chromium's address bar. Each sample should render without missing-glyph boxes. This page uses no downloadable fonts. Then recheck the affected website.
+
 Do not run a replacement DSH Web server or edit the profile's persistence files directly. For a runtime failure, report the first failing stage (tab, `/view`, display handshake, or established display), HTTP status and error code if available, host platform, and Docker engine version. Do not include tickets, cookies, request payloads, or browsing data.
 
 After installation, run the following UI checks independently in the existing loopback Web application and in the main Desktop window. Use a test Docker engine without the required release tag for the missing-image case; do not remove images or volumes from the user's engine to create this condition.
