@@ -1,7 +1,8 @@
-import { makeAgentAccess } from './agent-access.js';
+import { makeUseAgentAccess } from './agent-access.js';
 import { admissionMessage, post } from './http.js';
 import { createStreamChannel } from './stream.js';
-import { control, fill, overlay, viewport } from './styles.js';
+import { accessErrors, bar, fill, overlay, viewport } from './styles.js';
+import { renderSwitch } from './switch.js';
 
 const HANDSHAKE_MS = 30_000;
 const STATUS_MS = 2000;
@@ -312,12 +313,14 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
   return { setVisible, retry, mutate, blur: () => display?.rfb?.blur(), dispose };
 }
 
-export function makeBrowserView(React, RFB) {
-  const { createElement: h, useLayoutEffect, useRef, useState } = React;
-  const AgentAccess = makeAgentAccess(React);
-  return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed }) {
+export function makeBrowserView(React, RFB, menu) {
+  const { createElement: h, useId, useLayoutEffect, useRef, useState } = React;
+  const useAgentAccess = makeUseAgentAccess(React);
+  return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed, renderFactorySlot }) {
+    const switchId = useId();
     const target = useRef(null);
     const barRef = useRef(null);
+    const commandsRef = useRef(null);
     const connection = useRef(null);
     const close = useRef(onClosed);
     const [state, setState] = useState({ phase: 'starting' });
@@ -336,14 +339,29 @@ export function makeBrowserView(React, RFB) {
     useLayoutEffect(() => { connection.current?.setVisible(visible); }, [sessionId, tabSignal, openWebSocket, visible]);
 
     const connected = visible && state.phase === 'connected';
-    const command = (operation, enabled, label) => h('button', {
-      type: 'button', style: control, disabled: !enabled,
-      onClick: () => void connection.current?.mutate(operation),
-    }, t(label));
+    const access = useAgentAccess({ sessionId, tabSignal, visible, t });
+    const retry = state.canRetry
+      ? { id: 'retry', label: t(state.retryLabel), run: () => connection.current?.retry() } : null;
+    const menuTarget = menu.useTarget(visible && state.phase !== 'browserClosed', () => [
+      { id: 'restart', label: t('restartBrowser'), disabled: !state.canRestart,
+        run: () => void connection.current?.mutate('restart') },
+      { id: 'close', label: t('closeBrowser'), disabled: !state.canClose, danger: true,
+        run: () => void connection.current?.mutate('close') },
+      ...(retry ? [retry] : []),
+    ], sessionId, tabSignal);
+    const errors = [state.actionError && t(state.actionError), access.reason, access.error].filter(Boolean);
     return h('div', { hidden: !visible, style: { ...viewport, display: visible ? 'flex' : 'none', flexDirection: 'column' } },
-      h(AgentAccess, { sessionId, tabSignal, visible, t, barRef },
-        command('restart', state.canRestart, 'restartBrowser'), command('close', state.canClose, 'closeBrowser')),
-      state.actionError ? h('div', { role: 'alert', style: { padding: '4px 10px' } }, t(state.actionError)) : null,
+      h('div', { ref: barRef, tabIndex: -1, style: bar },
+        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, WebkitAppRegion: 'no-drag' } },
+          h('label', { htmlFor: switchId, style: { overflowWrap: 'anywhere' } }, t('sessionAgentAccess')),
+          renderSwitch(h, {
+            id: switchId, checked: access.granted,
+            disabled: !access.canChange || state.phase === 'browserClosed', busy: access.busy, onChange: access.setGranted,
+          })),
+        h('div', { ref: commandsRef, style: { flexShrink: 0 } },
+          renderFactorySlot('contextMenu.button', { target: menuTarget, label: t('browserControls'), size: 'sm' }))),
+      errors.length ? h('div', { style: accessErrors },
+        ...errors.map((text, index) => h('div', { key: index, role: 'alert' }, text))) : null,
       h('div', { style: viewport, role: 'region', 'aria-label': t('viewport') },
         h('div', {
           style: fill, ref: target,
@@ -352,14 +370,12 @@ export function makeBrowserView(React, RFB) {
               event.preventDefault();
               event.stopPropagation();
               connection.current?.blur();
-              barRef.current?.focus();
+              const commandButton = commandsRef.current?.querySelector('button');
+              (commandButton ?? barRef.current)?.focus();
             }
           },
         }),
         connected ? null : h('div', { style: overlay },
-          h('div', { role: state.canRetry ? 'alert' : 'status' }, t(state.phase)),
-          state.canRetry ? h('div', null, h('button', {
-            type: 'button', style: control, onClick: () => connection.current?.retry(),
-          }, t(state.retryLabel))) : null)));
+          h('div', { role: state.canRetry ? 'alert' : 'status' }, t(state.phase)))));
   };
 }

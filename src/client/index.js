@@ -2,6 +2,7 @@ import en from '../../locale/en.json' with { type: 'json' };
 import zh from '../../locale/zh.json' with { type: 'json' };
 import { makeAgentSettings } from './agent-settings.js';
 import { makeBrowserView } from './browser-view.js';
+import { makeNativeMenu } from './native-menu.js';
 import { panelStyle } from './styles.js';
 
 const NS = '@local/dsh-workspace-browser';
@@ -10,9 +11,10 @@ const dictionary = ({ meta, ...labels }) => ({ ...labels, title: meta.title });
 
 export function makeClient({ React, RFB }) {
   const { createElement: h, useLayoutEffect, useRef } = React;
-  const BrowserView = makeBrowserView(React, RFB);
+  const browserMenu = makeNativeMenu(React, `${NS}:browser`);
+  const BrowserView = makeBrowserView(React, RFB, browserMenu);
 
-  function BrowserTab({ sessionId, useTabInfo, useWorkspaces, t, openWebSocket }) {
+  function BrowserTab({ sessionId, useTabInfo, useWorkspaces, t, openWebSocket, renderFactorySlot }) {
     const { tab } = useTabInfo();
     const snapshot = useWorkspaces(selectSnapshot);
     const binding = useRef(null);
@@ -37,7 +39,7 @@ export function makeClient({ React, RFB }) {
       hidden: !tab.visible, style: tab.visible ? panelStyle : { display: 'none' }, 'aria-label': t('title'),
     }, retained ? h(BrowserView, {
       key: JSON.stringify([sessionId, retainedWorkspace]), sessionId, tabSignal: tab.signal, t, openWebSocket,
-      visible: tab.visible && ready, onClosed: closeTab,
+      visible: tab.visible && ready, onClosed: closeTab, renderFactorySlot,
     }) : null,
     !ready || !retained ? h('p', { role: 'status', style: { padding: '0 12px' } },
       t(ready ? 'sessionWorkspaceMissing' : 'loadingWorkspace')) : null);
@@ -46,6 +48,7 @@ export function makeClient({ React, RFB }) {
   function apply(ctx) {
     ctx.effect(() => ctx.locale.register(NS, { en: dictionary(en), zh: dictionary(zh) }), 'Workspace Browser: locale');
     const t = ctx.locale.bind(NS);
+    ctx.effect(() => browserMenu.attach(ctx.contextMenus), 'Workspace Browser: browser menu');
     ctx.effect(() => ctx.sidebarRightTabs.register({
       id: NS,
       kind: 'workspace-browser',
@@ -64,9 +67,10 @@ export function makeClient({ React, RFB }) {
       const AgentSettings = makeAgentSettings(React, configForms.get(entry));
       settingsCtx.effect(() => configForms.whileServed([entry], () => slots.inject('plugins.bundle.config', () => slots.register({
         name: 'plugins.bundle.config', key: NS, locale: NS,
-      }, ({ t, view }) => view === 'page' ? h(AgentSettings, { t }) : null))), 'Workspace Browser: plugin settings');
+      }, ({ t, view }) => view === 'page' ? h(AgentSettings, { t }) : null))),
+      'Workspace Browser: plugin settings');
     });
   }
 
-  return { inject: ['slots', 'locale', 'uiWorkspace', 'sidebarRightTabs', 'connection'], apply };
+  return { inject: ['slots', 'locale', 'uiWorkspace', 'sidebarRightTabs', 'connection', 'contextMenus'], apply };
 }

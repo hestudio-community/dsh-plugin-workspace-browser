@@ -1,12 +1,11 @@
 import { admissionMessage, post } from './http.js';
-import { accessErrors, bar, switchControl, switchThumb, switchTrack } from './styles.js';
 
 const POLL_MS = 2000;
 
-export function makeAgentAccess(React) {
-  const { createElement: h, Fragment, useLayoutEffect, useRef, useState } = React;
+export function makeUseAgentAccess(React) {
+  const { useLayoutEffect, useRef, useState } = React;
 
-  return function AgentAccess({ sessionId, tabSignal, visible, t, barRef, children }) {
+  return function useAgentAccess({ sessionId, tabSignal, visible, t }) {
     const [snapshot, setSnapshot] = useState(null);
     const [statusError, setStatusError] = useState(null);
     const [actionError, setActionError] = useState(null);
@@ -95,25 +94,25 @@ export function makeAgentAccess(React) {
     useLayoutEffect(() => { actions.current?.setVisible(visible); }, [sessionId, tabSignal, visible]);
 
     const status = snapshot?.sessionId === sessionId && snapshot.tabSignal === tabSignal ? snapshot : null;
-    const checked = status?.access?.sessionId === sessionId;
-    const canToggle = visible && !tabSignal.aborted && !busy
-      && (checked || (status?.provider === 'enabled' && status.canGrant));
+    const granted = status?.access?.sessionId === sessionId;
+    const canChange = visible && !tabSignal.aborted && !busy
+      && (granted || (status?.provider === 'enabled' && status.canGrant && !statusError));
+    const control = actions.current;
     function errorText(error) {
       const key = admissionMessage(error?.code);
       return key ? t(key) : (error?.userMessage || t('requestFailed'));
     }
     const reason = statusError ? errorText(statusError)
       : status?.provider === 'conflict' ? t('providerConflict') : null;
-    return h(Fragment, null,
-      h('div', { role: 'group', 'aria-label': t('browserControls'), tabIndex: -1, ref: barRef, style: bar },
-        children,
-        h('button', {
-          type: 'button', role: 'switch', 'aria-checked': checked, style: switchControl, disabled: !canToggle,
-          onClick() { if (canToggle) void actions.current?.mutate(checked ? '/agent/revoke' : '/agent/grant'); },
-        }, t('agentAccess'), h('span', { 'aria-hidden': true, style: switchTrack(checked) },
-          h('span', { style: switchThumb(checked) })))),
-      (reason || actionError) ? h('div', { style: accessErrors },
-        reason ? h('div', { role: 'alert' }, reason) : null,
-        actionError ? h('div', { role: 'alert' }, errorText(actionError)) : null) : null);
+    return {
+      granted, canChange, busy,
+      setGranted(next) {
+        if (canChange && next !== granted && control === actions.current) {
+          return control?.mutate(next ? '/agent/grant' : '/agent/revoke');
+        }
+      },
+      reason,
+      error: actionError ? errorText(actionError) : null,
+    };
   };
 }

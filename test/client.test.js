@@ -3,8 +3,9 @@ import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { makeClient } from '../src/client/index.js';
 import { createBrowserConnection, makeBrowserView } from '../src/client/browser-view.js';
-import { makeAgentAccess } from '../src/client/agent-access.js';
+import { makeNativeMenu } from '../src/client/native-menu.js';
 import { post } from '../src/client/http.js';
+import { accessErrors as accessErrorsStyle, overlay as overlayStyle } from '../src/client/styles.js';
 import { createStreamChannel } from '../src/client/stream.js';
 import { API, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION } from '../src/shared/protocol.js';
 
@@ -18,6 +19,7 @@ function mount(Component) {
     React: {
       createElement, Fragment: Symbol('fragment'),
       useSyncExternalStore(_subscribe, getSnapshot) { return getSnapshot(); },
+      useId() { const index = cursor++; cells[index] ??= {}; return `id-${index}`; },
       useRef(initial) { const index = cursor++; return cells[index] ??= { current: initial }; },
       useState(initial) {
         const index = cursor++;
@@ -43,7 +45,7 @@ function mount(Component) {
       for (const effect of effects) effect();
       return result;
     },
-    dispose() { for (const cell of cells) cell.dispose?.(); },
+    dispose() { for (const cell of cells) cell?.dispose?.(); },
   };
 }
 
@@ -60,6 +62,29 @@ function find(node, predicate) {
   return find(node.children, predicate);
 }
 
+const renderFactorySlot = (name, props) => createElement(name, props);
+const switchProps = (tree) => find(tree, (node) => node.type === 'input'
+  && node.props.type === 'checkbox' && node.props.role === 'switch').props;
+const switchLabel = (tree, id) => find(tree, (node) => node.type === 'label' && node.props.htmlFor === id);
+const toggleSwitch = (control) => control.onChange({ currentTarget: { checked: !control.checked } });
+
+function fakeMenus() {
+  const contributions = new Map();
+  let active;
+  return {
+    register(entry) {
+      contributions.set(entry.target, entry);
+      return () => contributions.delete(entry.target);
+    },
+    active: { getSnapshot: () => active },
+    open(target) {
+      active = target;
+      return contributions.get(target.kind)?.resolve(target.value) ?? [];
+    },
+    close() { active = null; },
+  };
+}
+
 function installTab() {
   let definition;
   let body;
@@ -69,6 +94,7 @@ function installTab() {
   apply({
     effect: (mount) => mount(),
     inject(services) { assert.deepEqual(services, ['configForms', 'slots']); },
+    contextMenus: fakeMenus(),
     connection: { openWebSocket: (path) => `owned-host:${path}` },
     locale: { register() {}, bind: () => (key) => key },
     sidebarRightTabs: { register: (entry) => { definition = entry; } },
@@ -97,7 +123,7 @@ test('native guide registers only its right-sidebar tab and binds the current vi
   const a = { workspaceId: 'a', sessionIds: ['blank', 'other'] };
   const b = { workspaceId: 'b', sessionIds: ['elsewhere'] };
   const render = (sessionId, items, phase = 'ready') => body({
-    t: (key) => key, sessionId, useTabInfo: () => ({ tab }),
+    t: (key) => key, sessionId, useTabInfo: () => ({ tab }), renderFactorySlot,
     useWorkspaces: (select) => select({ phase, items }),
   });
   const noView = (node, label) => assert.equal(node.children[1].children[0], label);
@@ -149,16 +175,17 @@ function installSettings() {
     },
   };
   let namespaceAvailable;
-  let dispose;
+  const disposers = [];
+  const menus = fakeMenus();
   apply({
     effect: (setup) => setup(),
-    connection: {}, slots,
+    connection: {}, slots, contextMenus: menus,
     locale: { register() {}, bind: () => (key) => key },
     sidebarRightTabs: { register() {} },
     inject(services, attach) {
       assert.deepEqual(services, ['configForms', 'slots']);
       attach({
-        effect: (setup) => { dispose = setup(); }, slots,
+        effect: (setup) => { disposers.push(setup()); }, slots,
         configForms: {
           get(entry) { assert.equal(entry, 'workspace-browser'); return form; },
           whileServed(entries, register) {
@@ -175,26 +202,27 @@ function installSettings() {
   return {
     contribution: () => contribution,
     serve: namespaceAvailable,
-    dispose: () => { mounted.dispose(); dispose(); },
+    dispose: () => { mounted.dispose(); for (const dispose of disposers.reverse()) dispose(); },
+    unmount: mounted.dispose,
     writes, form,
     update: (next) => { snapshot = { ...snapshot, ...next }; },
     render() {
-      Component = contribution.render({ t, view: 'page' }).type;
-      const page = mounted.render({ t });
-      const toggle = find(page, (item) => item.props?.role === 'switch');
-      const save = find(page, (item) => item.type === 'button');
-      const status = find(page, (item) => item.props?.role === 'status');
+      const entry = contribution.render({ t, view: 'page' });
+      Component = entry.type;
+      const page = mounted.render(entry.props);
+      assert.equal(find(page, (item) => item.type === 'contextMenu.button'), undefined);
+      const control = switchProps(page);
+      const description = find(page, (item) => item.children.includes('agentSettingsDescription'));
+      assert.equal(control['aria-describedby'], description.props.id);
       return {
-        checked: toggle?.props.checked, readOnly: toggle?.props.disabled,
-        change: (checked) => toggle.props.onChange({ currentTarget: { checked } }),
-        canSave: !save.props.disabled, save: () => page.props.onSubmit({ preventDefault() {} }),
-        notice: status.children[0],
+        control, label: switchLabel(page, control.id),
+        notice: find(page, (item) => item.props?.role === 'status')?.children[0],
       };
     },
   };
 }
 
-test('the workspace browser bundle form uses the served entry and only writes on Save', (t) => {
+test('the served bundle settings expose a direct Switch backed by the DSH configuration form', async (t) => {
   const settings = installSettings();
   t.after(settings.dispose);
   assert.equal(settings.contribution(), undefined);
@@ -205,62 +233,102 @@ test('the workspace browser bundle form uses the served entry and only writes on
   });
   assert.equal(render({ view: 'summary' }), null);
   const initial = settings.render();
-  assert.equal(initial.checked, true);
-  assert.equal(initial.canSave, false);
-  initial.change(false);
+  assert.equal(initial.label.children[0], 'agentSettingsLabel');
+  assert.equal(initial.control.checked, true);
+  assert.equal(initial.control.disabled, false);
   assert.deepEqual(settings.writes, []);
-  const draft = settings.render();
-  assert.equal(draft.checked, false);
-  assert.equal(draft.canSave, true);
-  return draft.save().then(() => {
-    assert.deepEqual(settings.writes, [{ ops: [{ op: 'set', path: ['agentEnabled'], value: false }], revision: 1 }]);
-    assert.equal(settings.render().checked, false);
-    assert.equal(settings.render().canSave, false);
-  });
+  await toggleSwitch(initial.control);
+  assert.deepEqual(settings.writes, [{ ops: [{ op: 'set', path: ['agentEnabled'], value: false }], revision: 1 }]);
+  const saved = settings.render();
+  assert.ok(!saved.notice);
+  assert.equal(saved.control.checked, false);
+  assert.equal(saved.control.id, initial.control.id);
+  settings.unmount();
+  await toggleSwitch(saved.control);
+  assert.equal(settings.writes.length, 1);
+  for (const locale of ['en', 'zh']) {
+    const messages = JSON.parse(readFileSync(new URL(`../locale/${locale}.json`, import.meta.url), 'utf8'));
+    for (const key of ['agentSettingsHeading', 'agentSettingsDescription', 'sessionAgentAccess']) {
+      assert.ok(messages[key]);
+    }
+  }
 });
 
-test('the workspace browser bundle form rejects stale and read-only edits and recovers after failed saves', async (t) => {
+test('settings guard unavailable, read-only, stale and pending actions and report failures', async (t) => {
   const settings = installSettings();
   t.after(settings.dispose);
   settings.serve();
-  settings.update({ writable: false });
+  settings.update({ status: 'loading' });
+  assert.equal(settings.render().notice, 'agentSettingsLoading');
+  await toggleSwitch(settings.render().control);
+  settings.update({ status: 'error' });
+  assert.equal(settings.render().notice, 'agentSettingsUnavailable');
+  assert.equal(settings.render().control.disabled, true);
+  settings.update({ status: 'ready', writable: false });
   const readOnly = settings.render();
-  assert.equal(readOnly.readOnly, true);
+  assert.equal(readOnly.control.disabled, true);
+  await toggleSwitch(readOnly.control);
   assert.equal(readOnly.notice, 'agentSettingsReadOnly');
-  assert.equal(readOnly.canSave, false);
   settings.update({ writable: true });
-  settings.render().change(false);
+  const stale = settings.render().control;
   settings.update({ revision: 2 });
-  const stale = settings.render();
-  assert.equal(stale.checked, true);
-  assert.equal(stale.canSave, false);
-  assert.equal(stale.notice, 'agentSettingsChanged');
-  await stale.save();
+  await toggleSwitch(stale);
+  assert.equal(settings.render().notice, 'agentSettingsChanged');
   assert.deepEqual(settings.writes, []);
 
-  for (const mutate of [async () => false, async () => { throw new Error('Disconnected'); }]) {
-    settings.form.mutate = mutate;
-    settings.render().change(false);
-    await settings.render().save();
-    assert.equal(settings.render().checked, true);
-    assert.equal(settings.render().canSave, false);
-    assert.equal(settings.render().notice, 'agentSettingsNotSaved');
-  }
+  let finish;
+  let started = 0;
+  settings.form.mutate = () => { started++; return new Promise((resolve) => { finish = resolve; }); };
+  const action = settings.render().control;
+  const pending = toggleSwitch(action);
+  await toggleSwitch(action);
+  const saving = settings.render();
+  await toggleSwitch(saving.control);
+  assert.equal(started, 1);
+  assert.equal(saving.notice, 'agentSettingsSaving');
+  assert.equal(saving.control.disabled, false);
+  assert.equal(saving.control['aria-disabled'], true);
+  assert.equal(saving.control.checked, true);
+  assert.equal(saving.control['aria-busy'], true);
+  finish(false);
+  await pending;
+  assert.equal(settings.render().notice, 'agentSettingsNotSaved');
+  settings.form.mutate = async () => { throw new Error('Disconnected'); };
+  await toggleSwitch(settings.render().control);
+  assert.equal(settings.render().control.checked, true);
+  assert.equal(settings.render().notice, 'agentSettingsNotSaved');
 });
 
 function mountView(sessionId, tabSignal, overrides = {}) {
   let view;
   const hooks = mount((props) => view(props));
-  view = makeBrowserView(hooks.React, overrides.RFB);
-  const render = () => hooks.render({
-    sessionId, tabSignal, visible: true, onClosed() {}, t: (key) => key, ...overrides,
-  }, (tree) => {
-    const target = find(tree, (node) => node.props?.onKeyDownCapture);
-    target.props.ref.current ??= { appendChild() {} };
-  });
+  const menus = fakeMenus();
+  const menu = makeNativeMenu(hooks.React, '@local/dsh-workspace-browser:browser');
+  menu.attach(menus);
+  view = makeBrowserView(hooks.React, overrides.RFB, menu);
+  const render = () => {
+    const tree = hooks.render({
+      sessionId, tabSignal, visible: true, onClosed() {}, t: (key) => key, renderFactorySlot, ...overrides,
+    }, (tree) => {
+      const target = find(tree, (node) => node.props?.onKeyDownCapture);
+      target.props.ref.current ??= { appendChild() {} };
+    });
+    return { tree, control: find(tree, (node) => node.type === 'contextMenu.button') };
+  };
   render();
-  return { render, dispose: hooks.dispose, phase: () => find(render(),
-    (node) => ['status', 'alert'].includes(node.props?.role))?.children[0] };
+  return {
+    render: () => render().tree,
+    control: () => render().control.props,
+    access: () => switchProps(render().tree),
+    actions: () => menus.open(render().control.props.target),
+    status: () => {
+      const overlay = find(render().tree, (node) => node.props?.style === overlayStyle);
+      return overlay?.children[0]?.children[0];
+    },
+    errors: () => find(render().tree, (node) => node.props?.style === accessErrorsStyle)
+      ?.children.map((child) => child.children[0]),
+    dispose: () => hooks.dispose(),
+  };
 }
 
 const flush = () => new Promise((resolve) => setImmediate(resolve));
@@ -357,15 +425,17 @@ test('a retired view aborts its request and ignores a late ticket after switchin
   const next = mountView('next', nextTab.signal);
   t.after(first.dispose);
   t.after(next.dispose);
-  assert.deepEqual(pending.map(({ body }) => body), [{ sessionId: 'first' }, { sessionId: 'next' }]);
+  assert.deepEqual(pending.filter(({ url }) => url.endsWith('/view')).map(({ body }) => body),
+    [{ sessionId: 'first' }, { sessionId: 'next' }]);
+  const viewRequests = pending.filter(({ url }) => url.endsWith('/view'));
   firstTab.abort();
-  assert.equal(pending[0].signal.aborted, true);
-  assert.equal(pending[1].signal.aborted, false);
-  pending[0].resolve({ ok: true, json: async () => ({ ok: true, ticket: 'stale' }) });
-  pending[1].resolve({ ok: false, json: async () => ({ ok: false, code: 'runner_isolation_failed', message: 'test' }) });
+  assert.equal(viewRequests[0].signal.aborted, true);
+  assert.equal(viewRequests[1].signal.aborted, false);
+  viewRequests[0].resolve({ ok: true, json: async () => ({ ok: true, ticket: 'stale' }) });
+  viewRequests[1].resolve({ ok: false, json: async () => ({ ok: false, code: 'runner_isolation_failed', message: 'test' }) });
   await flush();
-  assert.equal(first.phase(), 'starting');
-  assert.equal(next.phase(), 'runnerIsolationFailed');
+  assert.equal(first.status(), 'starting');
+  assert.equal(next.status(), 'runnerIsolationFailed');
 });
 
 test('profile startup failures use distinct localized messages', async (t) => {
@@ -392,7 +462,7 @@ test('profile startup failures use distinct localized messages', async (t) => {
     const view = mountView('workspace', new AbortController().signal);
     t.after(view.dispose);
     await flush();
-    assert.equal(view.phase(), key);
+    assert.equal(view.status(), key);
   }
   for (const locale of ['zh', 'en']) {
     const messages = JSON.parse(readFileSync(new URL(`../locale/${locale}.json`, import.meta.url), 'utf8'));
@@ -641,7 +711,15 @@ test('native resize ownership follows measured dimensions and Shift+Escape retur
   assert.equal(find(tree, (node) => node.children?.includes('focusBrowser')), undefined);
   assert.equal(find(tree, (node) => node.props?.title !== undefined), undefined);
   assert.equal(find(tree, (node) => node.props?.role === 'status'), undefined);
-  find(tree, (node) => node.props?.barRef).props.barRef.current = { focus() { restored = true; } };
+  const toolbar = find(tree, (node) => node.props?.tabIndex === -1);
+  assert.equal(switchProps(toolbar).role, 'switch');
+  const commands = find(toolbar, (node) => node.children?.some((child) => child?.type === 'contextMenu.button'));
+  commands.props.ref.current = {
+    querySelector(selector) {
+      assert.equal(selector, 'button');
+      return { focus() { restored = true; } };
+    },
+  };
   find(tree, (node) => node.props?.onKeyDownCapture).props.onKeyDownCapture({
     key: 'Escape', shiftKey: true, preventDefault() { prevented = true; }, stopPropagation() { stopped = true; },
   });
@@ -649,19 +727,9 @@ test('native resize ownership follows measured dimensions and Shift+Escape retur
 });
 
 const agentStatus = (access = null, canGrant = true, provider = 'enabled') => ({ provider, canGrant, access });
-const accessSwitch = (tree) => find(tree, (node) => node.props?.role === 'switch');
-const accessAlert = (tree) => find(tree, (node) => node.props?.role === 'alert')?.children[0];
+const accessAlert = (errors) => errors?.[0];
 
-function mountAccess(t, sessionId = 'one') {
-  let view;
-  const hooks = mount((props) => view(props));
-  view = makeAgentAccess(hooks.React);
-  t.after(hooks.dispose);
-  const tab = new AbortController();
-  return (overrides) => hooks.render({ sessionId, tabSignal: tab.signal, visible: true, t: (key) => key, ...overrides });
-}
-
-test('agent opt-in grants during startup and revokes with a disconnected display', async (t) => {
+test('the toolbar Switch follows the confirmed Session grant independently of browser commands', async (t) => {
   const requests = [];
   let launch;
   const mutations = [];
@@ -676,46 +744,52 @@ test('agent opt-in grants during startup and revokes with a disconnected display
   const display = fakeDisplays(t);
   const view = mountView('one', new AbortController().signal, display);
   t.after(view.dispose);
-  const access = mountAccess(t);
-  const render = () => access(find(view.render(), (node) => node.props?.barRef).props);
-  const button = () => accessSwitch(render()).props;
-  const assertToolbarOnly = () => {
-    const children = render().children.filter(Boolean);
-    assert.equal(children.length, 1);
-    assert.equal(children[0].props.role, 'group');
-    const toggle = accessSwitch(children[0]);
-    assert.equal(toggle.children[0], 'agentAccess');
-    assert.equal(toggle.props['aria-describedby'], undefined);
-  };
-  assert.equal(button()['aria-checked'], false);
-  assert.equal(button().disabled, true);
-  assertToolbarOnly();
+  const actions = () => view.actions();
+  const describe = () => actions().map(({ id, label, disabled, danger }) => [id, label, disabled, danger]);
+  assert.deepEqual(describe(), [
+    ['restart', 'restartBrowser', true, undefined],
+    ['close', 'closeBrowser', true, true],
+  ]);
+  const initial = view.access();
+  assert.equal(switchLabel(view.render(), initial.id).children[0], 'sessionAgentAccess');
+  assert.equal(initial.disabled, true);
+  await toggleSwitch(initial);
   await flush();
-  assert.equal(view.phase(), 'starting');
-  assert.equal(button().disabled, false);
-  assertToolbarOnly();
-  button().onClick();
-  assert.equal(button()['aria-checked'], false);
-  assert.equal(button().disabled, true);
+  assert.equal(view.status(), 'starting');
+  const grant = view.access();
+  assert.equal(grant.id, initial.id);
+  assert.equal(grant.disabled, false);
+  assert.equal(grant.checked, false);
+  void toggleSwitch(grant);
+  await toggleSwitch(grant);
+  const granting = view.access();
+  assert.equal(granting.disabled, false);
+  assert.equal(granting['aria-disabled'], true);
+  assert.equal(granting.checked, false);
+  assert.equal(granting['aria-busy'], true);
+  await toggleSwitch(granting);
 
   launch(response(ticket('g1')));
   await flush();
   display.rfbs[0].dispatchEvent(new Event('connect'));
-  render();
+  view.render();
   display.rfbs[0].dispatchEvent(new Event('disconnect'));
-  render();
+  view.render();
   assert.equal(mutations[0].signal.aborted, false);
   mutations[0].resolve(response(agentStatus({ sessionId: 'one' }, false)));
   await flush();
-  assert.equal(view.phase(), 'disconnected');
-  assert.equal(button()['aria-checked'], true);
-  assert.equal(button().disabled, false);
-  button().onClick();
-  assert.equal(button()['aria-checked'], true);
-  assert.equal(button().disabled, true);
+  assert.equal(view.status(), 'disconnected');
+  assert.deepEqual(describe().slice(2), [
+    ['retry', 'reconnect', undefined, undefined],
+  ]);
+  assert.equal(view.access().checked, true);
+  assert.equal(view.access().disabled, false);
+  void toggleSwitch(view.access());
+  assert.equal(view.access()['aria-disabled'], true);
+  assert.equal(view.access().checked, true);
   mutations[1].resolve(response(agentStatus()));
   await flush();
-  assert.equal(button()['aria-checked'], false);
+  assert.equal(view.access().checked, false);
   assert.deepEqual(requests.filter(([path]) => path.startsWith('/agent/')), [
     ['/agent/status', { sessionId: 'one' }],
     ['/agent/grant', { sessionId: 'one' }],
@@ -723,7 +797,7 @@ test('agent opt-in grants during startup and revokes with a disconnected display
   ]);
 });
 
-test('agent access reports Host errors and preserves the checked state until a confirmed response', async (t) => {
+test('agent access reports Host errors and preserves the confirmed state', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const data = agentStatus();
   let statusError;
@@ -738,32 +812,28 @@ test('agent access reports Host errors and preserves the checked state until a c
     }
     return response({ ok: false, code: 'revoke_failed', message: 'Could not revoke access' });
   });
-  const render = mountAccess(t);
-  const button = () => accessSwitch(render()).props;
-  render();
+  const view = mountView('one', new AbortController().signal);
+  t.after(view.dispose);
   await flush();
-  button().onClick();
-  await flush();
-  assert.equal(button()['aria-checked'], false);
-  assert.equal(accessAlert(render()), 'Could not grant access (grant_failed)');
+  await toggleSwitch(view.access());
+  assert.equal(view.access().checked, false);
+  assert.equal(accessAlert(view.errors()), 'Could not grant access (grant_failed)');
   grantError = null;
-  button().onClick();
-  await flush();
-  assert.equal(button()['aria-checked'], true);
-  assert.equal(accessAlert(render()), undefined);
+  await toggleSwitch(view.access());
+  assert.equal(view.access().checked, true);
+  assert.equal(accessAlert(view.errors()), undefined);
   statusError = 'Could not check access';
   t.mock.timers.tick(2000);
   await flush();
-  assert.equal(button()['aria-checked'], true);
-  assert.equal(button().disabled, false);
-  assert.equal(accessAlert(render()), 'Could not check access (status_failed)');
+  assert.equal(view.access().checked, true);
+  assert.equal(view.access().disabled, false);
+  assert.equal(accessAlert(view.errors()), 'Could not check access (status_failed)');
   statusError = null;
   t.mock.timers.tick(2000);
   await flush();
-  button().onClick();
-  await flush();
-  assert.equal(button()['aria-checked'], true);
-  assert.equal(accessAlert(render()), 'Could not revoke access (revoke_failed)');
+  await toggleSwitch(view.access());
+  assert.equal(view.access().checked, true);
+  assert.equal(accessAlert(view.errors()), 'Could not revoke access (revoke_failed)');
 });
 
 test('changing Sessions ignores a late mutation and never shows another Sessionâ€™s authorization', async (t) => {
@@ -776,22 +846,41 @@ test('changing Sessions ignores a late mutation and never shows another Sessionâ
     if (path === '/agent/grant') return new Promise((resolve) => { late = { resolve, signal }; });
     return response(payload.sessionId === 'one' ? agentStatus() : agentStatus({ sessionId: 'one' }, false, 'conflict'));
   });
-  const render = mountAccess(t);
+  let sessionId = 'one';
+  const tab = new AbortController();
+  const menus = fakeMenus();
+  let view;
+  const hooks = mount((props) => view(props));
+  const menu = makeNativeMenu(hooks.React, '@local/dsh-workspace-browser:browser');
+  menu.attach(menus);
+  view = makeBrowserView(hooks.React, null, menu);
+  t.after(hooks.dispose);
+  const render = () => hooks.render({
+    sessionId, tabSignal: tab.signal, visible: true, onClosed() {}, t: (key) => key, renderFactorySlot,
+  });
   render();
   await flush();
-  accessSwitch(render()).props.onClick();
-  const next = { sessionId: 'two' };
-  assert.equal(accessSwitch(render(next)).props['aria-checked'], false);
+  const first = switchProps(render());
+  assert.equal(first.checked, false);
+  void toggleSwitch(first);
+  assert.equal(late.signal.aborted, false);
+  sessionId = 'two';
+  const transitioning = switchProps(render());
+  assert.equal(transitioning.checked, false);
+  assert.ok(transitioning.disabled || transitioning['aria-disabled']);
   assert.equal(late.signal.aborted, true);
   late.resolve(response(agentStatus({ sessionId: 'one' })));
   await flush();
-  const tree = render(next);
-  const button = accessSwitch(tree).props;
-  assert.equal(button['aria-checked'], false);
-  assert.equal(button.disabled, true);
-  assert.equal(accessAlert(tree), 'providerConflict');
+  const next = render();
+  assert.equal(accessAlert(find(next, (node) => node.props?.style === accessErrorsStyle)
+    ?.children.map((child) => child.children[0])), 'providerConflict');
+  assert.equal(switchProps(next).checked, false);
+  assert.equal(switchProps(next).disabled, true);
+  await toggleSwitch(first);
+  await toggleSwitch(switchProps(next));
   assert.deepEqual(requests, [
-    ['/agent/status', { sessionId: 'one' }], ['/agent/grant', { sessionId: 'one' }],
-    ['/agent/status', { sessionId: 'two' }],
+    ['/view', { sessionId: 'one' }], ['/agent/status', { sessionId: 'one' }],
+    ['/agent/grant', { sessionId: 'one' }],
+    ['/view', { sessionId: 'two' }], ['/agent/status', { sessionId: 'two' }],
   ]);
 });

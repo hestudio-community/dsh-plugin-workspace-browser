@@ -1,58 +1,76 @@
+import { renderSwitch } from './switch.js';
+
+const row = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16 };
+const detail = { margin: '4px 0 0', color: 'var(--dsw-alias-label-secondary, CanvasText)', overflowWrap: 'anywhere' };
+
+function isReady(snapshot) {
+  return snapshot.status === 'ready' && typeof snapshot.value?.agentEnabled === 'boolean';
+}
+
+function canWrite(snapshot) {
+  return isReady(snapshot) && snapshot.writable && snapshot.revision !== undefined;
+}
+
 export function makeAgentSettings(React, form) {
-  const { createElement: h, useRef, useState, useSyncExternalStore } = React;
+  const { createElement: h, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } = React;
   const subscribe = (listener) => form.subscribe(listener);
   const read = () => form.getSnapshot();
 
   return function AgentSettings({ t }) {
+    const switchId = useId();
+    const descriptionId = useId();
     const snapshot = useSyncExternalStore(subscribe, read);
-    const [draft, setDraft] = useState(null);
     const [phase, setPhase] = useState(null);
     const pending = useRef(false);
+    const lifetime = useRef(null);
+    const ready = isReady(snapshot);
+    const writable = canWrite(snapshot);
     const value = snapshot.value?.agentEnabled;
-    const ready = snapshot.status === 'ready' && typeof value === 'boolean';
-    const writable = ready && snapshot.writable && snapshot.revision !== undefined;
-    const stale = draft !== null && draft.revision !== snapshot.revision;
-    const checked = draft && !stale ? draft.value : value;
-    const saving = phase === 'agentSettingsSaving';
-    const notice = phase ?? (stale ? 'agentSettingsChanged'
+    const revision = snapshot.revision;
+    const busy = phase === 'agentSettingsSaving';
+    const notice = busy ? phase
       : !ready ? (snapshot.status === 'loading' ? 'agentSettingsLoading' : 'agentSettingsUnavailable')
-        : !writable ? 'agentSettingsReadOnly' : null);
+        : !writable ? 'agentSettingsReadOnly' : phase;
 
-    async function save(event) {
-      event.preventDefault();
-      if (!writable || !draft || pending.current) return;
+    useLayoutEffect(() => {
+      lifetime.current = {};
+      return () => { lifetime.current = null; };
+    }, []);
+
+    async function setEnabled(next) {
+      const mounted = lifetime.current;
+      if (!mounted || !writable || next === value || pending.current) return;
       const latest = read();
-      if (latest.status !== 'ready' || !latest.writable || latest.revision !== draft.revision) {
-        setDraft(null);
+      if (!canWrite(latest) || latest.revision !== revision) {
         setPhase('agentSettingsChanged');
         return;
       }
+      if (latest.value.agentEnabled === next) return;
       pending.current = true;
       setPhase('agentSettingsSaving');
+      let saved = false;
       try {
-        const saved = await form.mutate([{ op: 'set', path: ['agentEnabled'], value: draft.value }], draft.revision);
-        setPhase(saved ? null : 'agentSettingsNotSaved');
+        saved = await form.mutate([{ op: 'set', path: ['agentEnabled'], value: next }], revision);
       } catch {
-        setPhase('agentSettingsNotSaved');
+        // A rejected mutation is reported like any unsuccessful save.
       } finally {
-        setDraft(null);
         pending.current = false;
+        if (lifetime.current === mounted) {
+          setPhase(saved ? null : 'agentSettingsNotSaved');
+        }
       }
     }
 
-    return h('form', { onSubmit: save, style: { display: 'grid', gap: 8, justifyItems: 'start', marginBlock: 16 } },
-      ready ? h('label', { style: { display: 'flex', alignItems: 'center', gap: 8 } },
-        h('input', {
-          type: 'checkbox', role: 'switch', checked, disabled: !writable || saving,
-          onChange(event) {
-            if (!writable || pending.current) return;
-            const next = event.currentTarget.checked;
-            setDraft(next === value ? null : { value: next, revision: snapshot.revision });
-            setPhase(null);
-          },
-        }), t('agentSettingsLabel')) : h('strong', null, t('agentSettingsLabel')),
-      h('div', null, t('agentSettingsDescription')),
-      h('button', { type: 'submit', disabled: !writable || !draft || stale || saving }, t('agentSettingsSave')),
-      h('div', { role: 'status' }, notice ? t(notice) : null));
+    const label = t('agentSettingsLabel');
+    return h('section', { 'aria-label': t('agentSettingsHeading'), style: { marginBlock: 16 } },
+      h('h2', { style: { margin: '0 0 8px', font: 'inherit', fontWeight: 600 } }, t('agentSettingsHeading')),
+      h('div', { style: { ...row, paddingBlock: 12, borderBlock: '1px solid var(--dsw-alias-border-l1, GrayText)' } },
+        h('div', { style: { minWidth: 0 } },
+          h('label', { htmlFor: switchId, style: { fontWeight: 500, overflowWrap: 'anywhere' } }, label),
+          h('p', { id: descriptionId, style: detail }, t('agentSettingsDescription'))),
+        renderSwitch(h, {
+          id: switchId, descriptionId, checked: value === true, disabled: !writable, busy, onChange: setEnabled,
+        })),
+      h('div', { role: 'status', style: notice ? detail : undefined }, notice ? t(notice) : null));
   };
 }
