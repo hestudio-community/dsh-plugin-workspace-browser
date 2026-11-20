@@ -7,7 +7,7 @@ export const settings = Object.fromEntries([
   'buttonOutline', 'buttonProgress', 'spinner', 'status', 'error', 'list', 'version', 'tag', 'tagPass', 'tagFail', 'tagSkipped',
 ].map(name => [name, `${scope}-${name}`]));
 
-// Adapted from the DSH 0.2.2-rc.3 button, settings-card, tag, and spinner styles: the same
+// Adapted from the DSH 0.2.2-rc.5 button, settings-card, tag, and spinner styles: the same
 // tokens, geometry, hover fencing, focus ring, and motion rules, on plugin-scoped class names.
 const css = `
 .${settings.page} { display: grid; min-width: 0; gap: 20px; margin-block: 16px; }

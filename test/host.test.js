@@ -9,6 +9,7 @@ import { apply, Config, inject } from '../src/host/index.js';
 import { createPool } from '../src/host/pool.js';
 import { registerWeb } from '../src/host/web.js';
 import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER } from '../src/shared/protocol.js';
+import { RUNNER_VERSION } from '../src/shared/runner-image.js';
 
 const origin = 'https://example.com';
 
@@ -137,7 +138,7 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   let issued = 0;
   let admitted = 0;
   const environmentCalls = [];
-  const runnerVersion = '0.1.3';
+  const runnerVersion = RUNNER_VERSION;
   const checks = ['dockerConfig', 'dockerCli', 'dockerEngine', 'runnerImage'].map(id => ({ id, status: 'pass' }));
   const dispose = registerWeb({
     connection: {

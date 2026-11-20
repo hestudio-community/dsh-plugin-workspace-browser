@@ -10,6 +10,22 @@ const runtimeFiles = ['automation.mjs', 'profile-recovery.mjs', 'protocol.mjs', 
 const buildFiles = ['Dockerfile', '.dockerignore', ...runtimeFiles];
 const runner = new URL('../runner/', import.meta.url);
 
+test('declares a DSH compatibility range instead of pinning one release', async () => {
+  // DSH tests an own `engines.dsh` range as the plugin's only requirement and includes
+  // prereleases, so an exact pin refused every later DSH release. The lower bound is the
+  // oldest release the current code runs on; the upper bound fails closed on the next minor.
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const range = pkg.engines.dsh;
+  assert.equal(range, '>=0.2.2-rc.3 <0.2.3-0');
+  assert.ok(range.includes('>=') && range.includes('<'), 'engines.dsh must be a bounded range');
+  assert.equal(pkg.engines.node, '>=22');
+
+  const lock = JSON.parse(await readFile(new URL('../package-lock.json', import.meta.url), 'utf8'));
+  assert.equal(lock.version, pkg.version);
+  assert.equal(lock.packages[''].version, pkg.version);
+  assert.equal(lock.packages[''].engines.dsh, range);
+});
+
 test('packages only the named runner inputs and client outputs, not image or release archives', async () => {
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.deepEqual([...pkg.files].sort(), [

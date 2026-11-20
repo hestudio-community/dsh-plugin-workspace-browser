@@ -3,7 +3,7 @@ import { PROJECT_ID } from '../shared/identity.js';
 const switchClass = `${PROJECT_ID}-switch`;
 const trackClass = `${switchClass}-track`;
 
-// DSH 0.2.2-rc.3 Switch CSS, adapted to a native checkbox and plugin-scoped classes.
+// DSH 0.2.2-rc.5 Switch CSS, adapted to a native checkbox and plugin-scoped classes.
 const switchCss = `
 .${switchClass} {
   position: relative; display: inline-flex; flex: none; align-items: center;
