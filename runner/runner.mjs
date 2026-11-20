@@ -11,6 +11,7 @@ import { AutomationError, createAutomation } from './automation.mjs';
 import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs } from './identity.mjs';
 import { recoverProfile } from './profile-recovery.mjs';
 import { readFrames, send, sendChunk } from './protocol.mjs';
+import { watchWindowTitle } from './window-title.mjs';
 import { createProxy } from './proxy.mjs';
 
 const exec = promisify(execFile);
@@ -27,6 +28,7 @@ let browser;
 let proxy;
 let vncPath;
 let automate;
+let stopTitleWatcher;
 let pumping = false;
 let startupCode = 'runner_isolation_failed';
 
@@ -45,6 +47,7 @@ function stop(reason) {
     }
   }
   ready = false;
+  stopTitleWatcher?.();
   for (const { controller } of jobs.values()) controller.abort();
   for (const socket of sessions.values()) socket.destroy();
   proxy?.close();
@@ -282,6 +285,7 @@ async function setup() {
     automate = createAutomation(browser);
     ready = true;
     send({ type: 'ready' });
+    stopTitleWatcher = watchWindowTitle(deskEnv, frame => { if (ready) send(frame); });
   } catch {
     stop(phase);
   }

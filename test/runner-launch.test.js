@@ -61,7 +61,7 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
       child.emit('close', code);
     }
     child.kill = () => close(1);
-    launches.push({ name, volume, owner, args });
+    launches.push({ name, volume, owner, args, stdout: child.stdout });
     if (containers.has(name)) {
       queueMicrotask(() => close(125));
     } else {
@@ -83,6 +83,27 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
 }
 
 const start = (launcher, workspace) => launcher.start(workspace, () => {}, process.cwd());
+
+test('window title frames update only the owning runner and stop exposing retired titles', async () => {
+  const engine = fakeEngine();
+  const first = start(engine.launcher(), 'first');
+  const second = start(engine.launcher(), 'second');
+  try {
+    await Promise.all([first.ready, second.ready]);
+    const { stdout } = engine.launches.find(entry => entry.owner === first.generation);
+    const title = windowTitle => stdout.write(`${JSON.stringify({ type: 'window-title', windowTitle })}\n`);
+    title('  工作区\nChromium  ');
+    assert.equal(first.windowTitle, '工作区 Chromium');
+    assert.equal(second.windowTitle, '');
+    title('🌏'.repeat(520));
+    assert.equal(first.windowTitle, '🌏'.repeat(512));
+    title('');
+    assert.equal(first.windowTitle, '');
+    title('retired');
+    await first.stop();
+    assert.equal(first.windowTitle, '');
+  } finally { await Promise.all([first.stop(), second.stop()]); }
+});
 
 test('workspace source is an existing canonical directory encoded as one CSV field', async () => {
   const fs = { canonicalize: async path => path, inspect: async () => ({ isDirectory: () => true }) };
@@ -115,16 +136,25 @@ test('two Hosts racing for one profile do not start or stop a second container',
   assert.notEqual(first.generation, second.generation);
   assert.match(first.generation, /^dsh-plugin-workspace-browser-[\da-f-]+$/);
   try {
-    await Promise.all([first.ready, assert.rejects(second.ready, { code: 'runner_profile_in_use', status: 503 })]);
-    await second.stop();
+    // Both preflights can pass before either name is reserved, so which Host wins
+    // the Docker name race is not fixed; exactly one must win and the other must
+    // report the occupied profile without launching or stopping anything.
+    const settled = await Promise.allSettled([first.ready, second.ready]);
+    assert.deepEqual(settled.map(({ status }) => status).sort(), ['fulfilled', 'rejected']);
+    const winner = settled[0].status === 'fulfilled' ? first : second;
+    const loser = winner === first ? second : first;
+    const failure = settled.find(({ status }) => status === 'rejected').reason;
+    assert.equal(failure.code, 'runner_profile_in_use');
+    assert.equal(failure.status, 503);
+    await loser.stop();
     const name = key('shared');
     assert.deepEqual(engine.probes, [`volume=${name}`, `volume=${name}`]);
     assert.deepEqual(engine.launches.map(({ name, volume }) => [name, volume]), [[name, name], [name, name]]);
-    assert.equal(engine.launches[0].owner, first.generation);
-    assert.equal(engine.containers.get(name).owner, first.generation);
+    assert.equal(engine.launches[0].owner, winner.generation);
+    assert.equal(engine.containers.get(name).owner, winner.generation);
     assert.deepEqual(engine.stops, []);
     const id = engine.containers.get(name).id;
-    await first.stop();
+    await winner.stop();
     assert.deepEqual(engine.stops, [id]);
   } finally {
     await Promise.all([first.stop(), second.stop()]);

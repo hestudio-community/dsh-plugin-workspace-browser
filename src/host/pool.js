@@ -161,7 +161,9 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
   }
 
   function snapshot(room) {
-    return { state: room.state, generation: room.attempt.generation, ...(room.state === 'failed' ? { code: room.code } : {}) };
+    const windowTitle = room.state === 'ready' && room.attempt.runner?.windowTitle;
+    return { state: room.state, generation: room.attempt.generation, ...(windowTitle ? { windowTitle } : {}),
+      ...(room.state === 'failed' ? { code: room.code } : {}) };
   }
 
   function sweep() {

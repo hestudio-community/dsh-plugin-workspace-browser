@@ -89,6 +89,7 @@ function fakeMenus() {
 function installTab() {
   let definition;
   let body;
+  let title;
   const slots = [];
   const mounted = mount((props) => body(props));
   const { apply } = makeClient({ React: mounted.React, RFB: null });
@@ -103,16 +104,17 @@ function installTab() {
       inject(name, mount) { slots.push(name); return mount(); },
       register(options, render) {
         assert.equal(options.key, definition.id);
-        body = render;
+        if (options.name === 'sidebar.right.pane.tab.title') title = render;
+        else body = render;
       },
     },
   });
-  return { slots, definition, body: mounted.render };
+  return { slots, definition, body: mounted.render, title };
 }
 
 test('native guide registers only its right-sidebar tab and binds the current visible Session', () => {
   const { slots, definition, body } = installTab();
-  assert.deepEqual(slots, ['sidebar.right.pane.tab']);
+  assert.deepEqual(slots, ['sidebar.right.pane.tab', 'sidebar.right.pane.tab.title']);
   assert.equal(definition.id, 'dsh-plugin-workspace-browser');
   assert.equal(definition.kind, 'dsh-plugin-workspace-browser');
   assert.equal(definition.keepMounted, true);
@@ -150,6 +152,25 @@ test('native guide registers only its right-sidebar tab and binds the current vi
   render('elsewhere', [a]);
   assert.equal(closed, 1);
   assert.equal(render('elsewhere', [a, b]), null);
+});
+
+test('titles passively follow only their own tab occurrence, leaving the launcher unchanged', () => {
+  const { body, title, definition } = installTab();
+  const props = () => {
+    const tab = { signal: new AbortController().signal, visible: false };
+    return { sessionId: 'one', useTabInfo: () => ({ tab }), t: (key) => key,
+      useWorkspaces: (select) => select({ phase: 'ready', items: [{ workspaceId: 'w', sessionIds: ['one'] }] }) };
+  };
+  const first = props();
+  const other = props();
+  assert.equal(title(first), 'title');
+  const { onTitle } = body(first).children[0].props;
+  onTitle('Example — Chromium');
+  assert.equal(title(first), 'Example — Chromium');
+  assert.equal(title(other), 'title');
+  assert.equal(definition.title(), 'title');
+  onTitle(undefined);
+  assert.equal(title(first), 'title');
 });
 
 function installSettings() {
@@ -877,6 +898,41 @@ test('a first ticket received while hidden binds the run but never opens a displ
   await flush();
   assert.deepEqual(bodies.at(-1), { sessionId: 'one', runId: 'run', generation: 'g1' });
   assert.equal(display.sockets.length, 1);
+});
+
+test('a tab title follows its own run title and clears on retire', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let status = { state: 'ready', generation: 'g1', windowTitle: '  Docs — Chromium  ' };
+  t.mock.method(globalThis, 'fetch', async (url, { body }) => {
+    const payload = JSON.parse(body);
+    return url.endsWith('/status') ? response(status) : response(ticket(payload.generation ?? 'g1'));
+  });
+  const titles = [];
+  const display = fakeDisplays(t);
+  const tab = new AbortController();
+  const client = createBrowserConnection({
+    sessionId: 'one', tabSignal: tab.signal, target: { appendChild() {} }, ...display,
+    onClosed() {}, onChange() {}, onTitle: (title) => titles.push(title),
+  });
+  t.after(client.dispose);
+  client.setVisible(true);
+  client.setVisible(false);
+  await flush();
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(titles.at(-1), 'Docs — Chromium');
+  status = { state: 'ready', generation: 'g1', windowTitle: '   ' };
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(titles.at(-1), undefined);
+  status = { state: 'ready', generation: 'g1', windowTitle: 'Later — Chromium' };
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(titles.at(-1), 'Later — Chromium');
+  status = { state: 'closed' };
+  t.mock.timers.tick(2000);
+  await flush();
+  assert.equal(titles.at(-1), undefined);
 });
 
 test('a status transport failure during reopen is retryable and never closes the tab', async (t) => {

@@ -7,5 +7,6 @@
 !protocol.mjs
 !proxy.mjs
 !runner.mjs
+!window-title.mjs
 !chromium.sh
 !openbox.xml

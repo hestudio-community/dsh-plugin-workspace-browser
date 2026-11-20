@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-workspace-browser",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "description": "An isolated workspace Chromium sidebar for DeepSeek Harness Web and Desktop.",
@@ -27,6 +27,7 @@
     "runner/protocol.mjs",
     "runner/proxy.mjs",
     "runner/runner.mjs",
+    "runner/window-title.mjs",
     "runner/chromium.sh",
     "runner/openbox.xml",
     "cordis.patch.yml",

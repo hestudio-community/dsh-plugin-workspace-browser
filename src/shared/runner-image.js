@@ -1,7 +1,7 @@
 import pkg from '../../package.json' with { type: 'json' };
 import { PROJECT_ID } from './identity.js';
 
-export const RUNNER_PROTOCOL = '2';
+export const RUNNER_PROTOCOL = '3';
 export const RUNNER_PROTOCOL_LABEL = `dev.dsh.${PROJECT_ID}.runner-protocol`;
 export const RUNNER_VERSION = pkg.version;
 export const RUNNER_VERSION_LABEL = `dev.dsh.${PROJECT_ID}.plugin-version`;
@@ -36,6 +36,7 @@ export const RUNNER_BUILD_FILES = Object.freeze([
   'protocol.mjs',
   'proxy.mjs',
   'runner.mjs',
+  'window-title.mjs',
   'chromium.sh',
   'openbox.xml',
 ]);

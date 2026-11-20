@@ -133,6 +133,7 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
   const pending = new Map();
   let stopped = false;
   let readySeen = false;
+  let windowTitle = '';
   let stopPromise;
   let resolveReady;
   let rejectReady;
@@ -203,6 +204,11 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
       readySeen = true;
       clearTimeout(bootTimer);
       resolveReady();
+      return true;
+    }
+    if (message.type === 'window-title') {
+      if (!readySeen || typeof message.windowTitle !== 'string') return false;
+      windowTitle = Array.from(message.windowTitle.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, ' ').trim()).slice(0, 512).join('');
       return true;
     }
     if (!validId(message.id)) return false;
@@ -350,6 +356,7 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
   return {
     generation,
     ready,
+    get windowTitle() { return stopped ? '' : windowTitle; },
     stop,
     attach(view) {
       const id = randomUUID();

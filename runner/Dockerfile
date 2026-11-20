@@ -7,7 +7,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       ca-certificates chromium fonts-liberation fonts-noto-core fonts-noto-cjk \
       fonts-noto-color-emoji util-linux openbox \
-      tigervnc-standalone-server x11-utils xauth xfonts-base \
+      tigervnc-standalone-server x11-utils xauth xdotool xfonts-base \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /usr/sbin/nologin browser \
     && useradd --create-home --shell /usr/sbin/nologin dshdesk \
@@ -18,7 +18,7 @@ RUN apt-get update \
 
 WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --save-exact puppeteer-core@24.31.0
-COPY automation.mjs identity.mjs profile-recovery.mjs protocol.mjs proxy.mjs runner.mjs chromium.sh openbox.xml ./
+COPY automation.mjs identity.mjs profile-recovery.mjs protocol.mjs proxy.mjs runner.mjs window-title.mjs chromium.sh openbox.xml ./
 RUN sed -i 's/\r$//' ./chromium.sh && chmod 0755 ./chromium.sh
 
 ARG DSH_PLUGIN_VERSION

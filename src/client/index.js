@@ -15,6 +15,33 @@ const dictionary = ({ meta, ...labels }) => ({ ...labels, title: meta.title });
 export function makeClient({ React, RFB }) {
   const { createElement: h, useLayoutEffect, useRef } = React;
   const browserMenu = makeNativeMenu(React, `${PROJECT_ID}:browser`);
+  // A tab title can mount without its body. Keep it a passive subscriber to
+  // that occurrence's existing status polling, never a browser client itself.
+  const titles = new WeakMap();
+  function titleStore(signal) {
+    let store = titles.get(signal);
+    if (!store) {
+      const listeners = new Set();
+      let title;
+      store = {
+        getSnapshot: () => title,
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        set(next) {
+          if (next === title) return;
+          title = next;
+          for (const listener of listeners) listener();
+        },
+      };
+      titles.set(signal, store);
+    }
+    return store;
+  }
+  function BrowserTitle({ useTabInfo, t }) {
+    const { tab } = useTabInfo();
+    const store = titleStore(tab.signal);
+    const title = React.useSyncExternalStore(store.subscribe, store.getSnapshot);
+    return (!tab.signal.aborted && title) || t('title');
+  }
   const BrowserView = makeBrowserView(React, RFB, browserMenu);
 
   function BrowserTab({ sessionId, useTabInfo, useWorkspaces, t, openWebSocket, renderFactorySlot }) {
@@ -28,6 +55,8 @@ export function makeClient({ React, RFB }) {
     const workspaceId = matches.length === 1 ? matches[0].workspaceId : undefined;
     const removed = ready && previous && previous.workspaceId !== workspaceId;
     const closeTab = () => { if (!tab.signal.aborted) tab.actions.close(); };
+    // Identity of `set` is stable per occurrence, so the view keeps one connection.
+    const setTitle = titleStore(tab.signal).set;
 
     useLayoutEffect(() => {
       if (tab.signal.aborted) return;
@@ -42,7 +71,7 @@ export function makeClient({ React, RFB }) {
       hidden: !tab.visible, style: tab.visible ? panelStyle : { display: 'none' }, 'aria-label': t('title'),
     }, retained ? h(BrowserView, {
       key: JSON.stringify([sessionId, retainedWorkspace]), sessionId, tabSignal: tab.signal, t, openWebSocket,
-      visible: tab.visible && ready, onClosed: closeTab, renderFactorySlot,
+      visible: tab.visible && ready, onClosed: closeTab, onTitle: setTitle, renderFactorySlot,
     }) : null,
     !ready || !retained ? h('p', { role: 'status', style: { padding: '0 12px' } },
       t(ready ? 'sessionWorkspaceMissing' : 'loadingWorkspace')) : null);
@@ -63,6 +92,10 @@ export function makeClient({ React, RFB }) {
     ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab', () => ctx.slots.register({
       name: 'sidebar.right.pane.tab', key: PROJECT_ID, locale: PROJECT_ID,
     }, (props) => BrowserTab({ ...props, openWebSocket }))), `${PROJECT_ID}: tab body`);
+
+    ctx.effect(() => ctx.slots.inject('sidebar.right.pane.tab.title', () => ctx.slots.register({
+      name: 'sidebar.right.pane.tab.title', key: PROJECT_ID, locale: PROJECT_ID,
+    }, BrowserTitle)), `${PROJECT_ID}: tab title`);
 
     ctx.inject(['configForms', 'slots'], (settingsCtx) => {
       const { configForms, slots } = settingsCtx;

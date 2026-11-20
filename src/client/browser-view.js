@@ -32,7 +32,7 @@ const token = (value) => typeof value === 'string' && value.length > 0;
 
 // The panel's logical run outlives a visible display. Status is authoritative;
 // retiring a display or aborting a DSH tab occurrence never sends a close RPC.
-export function createBrowserConnection({ sessionId, tabSignal, target, RFB, openWebSocket, onClosed, onChange }) {
+export function createBrowserConnection({ sessionId, tabSignal, target, RFB, openWebSocket, onClosed, onChange, onTitle }) {
   let visible = false;
   let closed = false;
   let runId;
@@ -76,6 +76,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
   function retire() {
     if (disposed || closed) return;
     closed = true;
+    onTitle?.(undefined);
     stopStatus();
     stopDisplayRequest();
     stopDisplay();
@@ -94,6 +95,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
       stopDisplay();
       wantDisplay = true;
     }
+    onTitle?.(state === 'ready' && typeof result.windowTitle === 'string' ? result.windowTitle.trim() || undefined : undefined);
     runState = state;
     if (state === 'ready') {
       if (visible && wantDisplay && !display && !viewRequest && !action) void join();
@@ -122,6 +124,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
     } catch (error) {
       if (request.signal.aborted) return;
       if (error?.code === 'browser_closed') return retire();
+      onTitle?.(undefined);
       // A transport error is not proof that Chromium has closed. Keep polling,
       // but offer a manual reconnect if a visible ready run is awaiting its display.
       if (visible && wantDisplay && !display && !viewRequest && runState === 'ready') {
@@ -301,6 +304,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
   }
   function dispose() {
     disposed = true;
+    onTitle?.(undefined);
     tabSignal.removeEventListener('abort', dispose);
     action?.abort();
     stopStatus();
@@ -314,7 +318,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
 export function makeBrowserView(React, RFB, menu) {
   const { createElement: h, useId, useLayoutEffect, useRef, useState } = React;
   const useAgentAccess = makeUseAgentAccess(React);
-  return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed, renderFactorySlot }) {
+  return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed, onTitle, renderFactorySlot }) {
     const switchId = useId();
     const target = useRef(null);
     const barRef = useRef(null);
@@ -326,14 +330,14 @@ export function makeBrowserView(React, RFB, menu) {
     useLayoutEffect(() => {
       const client = createBrowserConnection({
         sessionId, tabSignal, target: target.current, RFB, openWebSocket,
-        onClosed: () => close.current(), onChange: setState,
+        onClosed: () => close.current(), onChange: setState, onTitle,
       });
       connection.current = client;
       return () => {
         connection.current = null;
         client.dispose();
       };
-    }, [sessionId, tabSignal, openWebSocket]);
+    }, [sessionId, tabSignal, openWebSocket, onTitle]);
     useLayoutEffect(() => { connection.current?.setVisible(visible); }, [sessionId, tabSignal, openWebSocket, visible]);
 
     const connected = visible && state.phase === 'connected';

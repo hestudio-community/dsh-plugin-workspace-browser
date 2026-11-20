@@ -6,7 +6,7 @@ import {
   RUNNER_VERSION, RUNNER_VERSION_ARG, RUNNER_VERSION_LABEL, runnerBuildArgs, runnerImageTag,
 } from '../src/shared/runner-image.js';
 
-const runtimeFiles = ['automation.mjs', 'identity.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'chromium.sh', 'openbox.xml'];
+const runtimeFiles = ['automation.mjs', 'identity.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'window-title.mjs', 'chromium.sh', 'openbox.xml'];
 const buildFiles = ['Dockerfile', '.dockerignore', ...runtimeFiles];
 const runner = new URL('../runner/', import.meta.url);
 
@@ -44,7 +44,7 @@ test('Docker context, COPY and protocol metadata match the shared build contract
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(RUNNER_VERSION, pkg.version);
   assert.equal(RUNNER_IMAGE, `dsh-plugin-workspace-browser-runner:v${pkg.version.replace('+', '_')}`);
-  assert.equal(RUNNER_PROTOCOL, '2');
+  assert.equal(RUNNER_PROTOCOL, '3');
   assert.equal(RUNNER_PROTOCOL_LABEL, 'dev.dsh.dsh-plugin-workspace-browser.runner-protocol');
   assert.equal(RUNNER_VERSION_LABEL, 'dev.dsh.dsh-plugin-workspace-browser.plugin-version');
 
