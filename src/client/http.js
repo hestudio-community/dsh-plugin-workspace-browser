@@ -6,6 +6,14 @@ export function admissionMessage(code) {
 }
 
 const environmentMessages = new Map([
+  ['root_browser_account_missing', 'rootAccountMissing'],
+  ['root_browser_account_invalid', 'rootAccountInvalid'],
+  ['workspace_acl_tools_missing', 'workspaceAclToolsMissing'],
+  ['runner_workspace_grant_required', 'workspaceGrantRequired'],
+  ['workspace_access_unavailable', 'workspaceAccessUnavailable'],
+  ['workspace_access_stale', 'workspaceAccessStale'],
+  ['workspace_access_busy', 'workspaceAccessBusy'],
+  ['workspace_access_failed', 'workspaceAccessFailed'],
   ['docker_endpoint_unsupported', 'dockerEndpointUnsupported'],
   ['docker_identity_unsupported', 'dockerIdentityUnsupported'],
   ['docker_config_invalid', 'dockerConfigInvalid'],

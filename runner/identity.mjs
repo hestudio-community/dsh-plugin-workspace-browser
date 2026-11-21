@@ -23,6 +23,18 @@ export function privilegeArgs({ uid, gid, groups }) {
   return [`--reuid=${uid}`, `--regid=${gid}`, groups.length ? `--groups=${groups.join(',')}` : '--clear-groups', '--'];
 }
 
+export async function workspaceStartupError(mountPaths, identity, exec) {
+  if (!mountPaths.includes('/workspace')) return 'runner_workspace_invalid';
+  // Only the shell running as the browser can report a permission denial.
+  // A failed setpriv invocation or a non-directory is a different startup failure.
+  const probe = 'test -d /workspace || exit 1; test -r /workspace && test -x /workspace && test -w /workspace || echo denied';
+  try {
+    const { stdout } = await exec('setpriv', [...privilegeArgs(identity), 'sh', '-c', probe]);
+    if (stdout === 'denied\n') return 'runner_workspace_permission_denied';
+    return stdout === '' ? null : 'runner_workspace_invalid';
+  } catch { return 'runner_workspace_invalid'; }
+}
+
 // Only the reserved, offline profile volume is eligible. Do not follow symlinks,
 // cross mounts (including same-device bind mounts), or mutate hard-linked inodes.
 export async function migrateProfile(directory, mountPaths, { uid, gid }) {

@@ -9,6 +9,7 @@ import { resolvePublicIPv4 } from './egress.js';
 import { IMAGE_PLATFORM } from '../shared/runner-image.js';
 import { createRunnerEnvironment, environmentError } from './image.js';
 
+import { resolveRootAccount, rootAccountName } from './root-account.js';
 import { browserIdentity, workspaceMount } from './workspace.js';
 
 const DEFAULT_SECCOMP = fileURLToPath(new URL('./chromium-seccomp.json', import.meta.url));
@@ -22,7 +23,7 @@ const containerId = /^[a-f0-9]{64}$/;
 
 const runnerUnavailable = () => new BrowserError('runner_unavailable', 'The Chromium runner stopped.', 503);
 const startupFailure = code => new BrowserError(code, 'Chromium runner could not start.', 503);
-const startupCodes = new Set(['runner_start_failed', 'runner_isolation_failed', 'runner_display_failed', 'runner_profile_recovery_failed', 'runner_workspace_invalid']);
+const startupCodes = new Set(['runner_start_failed', 'runner_isolation_failed', 'runner_display_failed', 'runner_profile_recovery_failed', 'runner_workspace_invalid', 'runner_workspace_permission_denied']);
 function dockerFailure(phase, error, timedOut = false) {
   if (error?.code === 'ENOENT') return environmentError('docker_cli_missing');
   if (phase === 'cli') return environmentError('docker_cli_unavailable');
@@ -52,7 +53,9 @@ export function dockerCommand(config, host = process) {
       (host.env.DOCKER_CONTEXT && !['default', 'desktop-linux'].includes(host.env.DOCKER_CONTEXT))) {
     throw environmentError('docker_endpoint_unsupported');
   }
-  const identity = browserIdentity(host);
+  // Root identity is added only after the dedicated account check succeeds.
+  const root = host.platform === 'linux' && host.geteuid() === 0;
+  const identity = root ? undefined : browserIdentity(host);
   const env = { ...host.env };
   for (const key of Object.keys(env)) {
     if (/^(DOCKER_(HOST|CONTEXT|TLS|TLS_VERIFY|CERT_PATH)|BUILDX_BUILDER|BUILDKIT_HOST)$/i.test(key)) delete env[key];
@@ -99,15 +102,16 @@ function dockerQuery(docker, args, signal, phase) {
   });
 }
 
-export function createRunnerLauncher(config, { spawnDocker = runDocker, queryDocker = dockerQuery, host = process } = {}) {
+export function createRunnerLauncher(config, { spawnDocker = runDocker, queryDocker = dockerQuery, host = process, resolveAccount = resolveRootAccount, aclTools } = {}) {
   const admission = new AbortController();
   const environment = createRunnerEnvironment({
-    configure: () => dockerCommand(config, host), command: queryDocker, signal: admission.signal,
+    configure: () => dockerCommand(config, host), command: queryDocker, signal: admission.signal, aclTools,
+    rootAccount: host.platform === 'linux' && host.geteuid() === 0 ? () => resolveAccount(rootAccountName(config.rootBrowserAccount)) : undefined,
   });
   return {
     environment,
     start(workspaceId, onExit, workspacePath) {
-      return createRunner(config, workspaceId, onExit, workspacePath, environment, admission.signal, spawnDocker, queryDocker);
+      return createRunner(config, workspaceId, onExit, workspacePath, environment, admission.signal, spawnDocker, queryDocker, host);
     },
     async close() {
       admission.abort(runnerUnavailable());
@@ -116,7 +120,7 @@ export function createRunnerLauncher(config, { spawnDocker = runDocker, queryDoc
   };
 }
 
-function createRunner(config, workspaceId, onExit, workspacePath, environment, admissionSignal, spawnDocker, queryDocker) {
+function createRunner(config, workspaceId, onExit, workspacePath, environment, admissionSignal, spawnDocker, queryDocker, host) {
   const workspaceKey = createHash('sha256').update(config.profileNamespace || 'default').update('\0').update(workspaceId).digest('hex');
   const volume = `${PROJECT_ID}-${workspaceKey}`;
   const name = volume;
@@ -196,7 +200,8 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
   function accept(message) {
     if (!message || typeof message !== 'object' || Array.isArray(message)) return false;
     if (!readySeen && message.type === 'startup-error' && startupCodes.has(message.code)) {
-      reportedFailure = startupFailure(message.code);
+      reportedFailure = startupFailure(message.code === 'runner_workspace_permission_denied' && docker.rootAccount
+        ? 'runner_workspace_grant_required' : message.code);
       return true;
     }
     if (reportedFailure) return false;
@@ -313,7 +318,7 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
         '--security-opt=no-new-privileges', `--security-opt=seccomp=${docker.seccomp}`,
         '--pids-limit=384', '--shm-size=256m', '--memory=2g',
         '--name', name, '--label', `${PROJECT_LABEL}=1`, '--label', `${INSTANCE_LABEL}=${generation}`,
-        '--mount', `type=volume,source=${volume},target=/profile`, '--mount', mount, ...docker.identity, image,
+        '--mount', `type=volume,source=${volume},target=/profile`, '--mount', mount, ...(docker.rootAccount ? browserIdentity(host, docker.rootAccount) : docker.identity), image,
       ], ['pipe', 'pipe', 'ignore']);
       bootTimer = setTimeout(() => void stop(startupFailure('runner_start_timeout')), BOOT_MS);
       bootTimer.unref?.();

@@ -15,14 +15,14 @@ export async function workspaceMount(path, { platform = process.platform, canoni
   return `type=bind,"source=${path.replaceAll('"', '""')}",target=/workspace,bind-recursive=disabled`;
 }
 
-export function browserIdentity(host = process) {
+export function browserIdentity(host = process, account) {
   if (host.platform === 'win32' || host.platform === 'darwin') return [];
   if (host.platform !== 'linux') throw environmentError('docker_identity_unsupported');
-  const uid = host.geteuid();
-  // A root Host uses the image's non-root browser account, not the Host's groups.
-  if (uid === 0) return [];
-  const gid = host.getegid();
-  const groups = [...new Set(host.getgroups())].filter(id => id !== gid);
+  const root = host.geteuid() === 0;
+  const uid = root ? account?.uid : host.geteuid();
+  const gid = root ? account?.gid : host.getegid();
+  const groups = root ? [] : [...new Set(host.getgroups())].filter(id => id !== gid);
+  if (!uid) throw environmentError('docker_identity_unsupported');
   if (![uid, gid, ...groups].every(id => Number.isInteger(id) && id >= 0 && id < 0xffffffff) || !gid) {
     throw environmentError('docker_identity_unsupported');
   }

@@ -225,7 +225,7 @@ function installSettings() {
   function renderSection(index, beforeCommit) {
     const page = contribution.render({ t, view: 'page' });
     assert.equal(page.type, 'div');
-    assert.equal(page.children.length, 5);
+    assert.equal(page.children.length, 6);
     assert.equal(page.children[0].type, 'style');
     const entry = page.children[index + 1];
     Component = entry.type;
@@ -239,6 +239,7 @@ function installSettings() {
     writes, form,
     update: (next) => { snapshot = { ...snapshot, ...next }; },
     renderOrigins: () => renderSection(3),
+    renderAccount: () => renderSection(4),
     renderIdle: () => renderSection(1),
     renderEnvironment: (beforeCommit) => renderSection(2, beforeCommit),
     render() {
@@ -622,6 +623,8 @@ test('profile and environment startup failures use distinct localized messages',
     ['runner_profile_in_use', 'runnerProfileInUse'],
     ['runner_profile_recovery_failed', 'runnerProfileRecoveryFailed'],
     ['runner_start_failed', 'runnerStartFailed'],
+    ['runner_workspace_invalid', 'runnerWorkspaceInvalid'],
+    ['runner_workspace_permission_denied', 'runnerWorkspacePermissionDenied'],
     ['runner_isolation_failed', 'runnerIsolationFailed'],
     ['docker_config_invalid', 'dockerConfigInvalid'],
     ['docker_cli_missing', 'dockerCliMissing'],
@@ -648,6 +651,74 @@ test('profile and environment startup failures use distinct localized messages',
     assert.ok(texts.every(text => typeof text === 'string' && text.trim()));
     assert.equal(new Set(texts).size, cases.length);
   }
+});
+
+test('Linux account control is hidden unless the Host reports a root Linux platform', async t => {
+  const form = installSettings();
+  t.after(form.dispose);
+  form.serve();
+  t.mock.method(globalThis, 'fetch', async () => response({ root: false }));
+  assert.equal(form.renderAccount(), null);
+  await flush();
+  assert.equal(form.renderAccount(), null);
+});
+
+test('a root Host shows the account control before a value is stored and saves through its revision', async t => {
+  const form = installSettings();
+  t.after(form.dispose);
+  form.serve();
+  t.mock.method(globalThis, 'fetch', async url => {
+    assert.match(String(url), /\/environment\/platform$/);
+    return response({ root: true });
+  });
+  form.update({ revision: 7 });
+  assert.equal(form.renderAccount(), null);
+  await flush();
+  const input = find(form.renderAccount(), row => row.type === 'input');
+  assert.equal(input.props.value, '');
+  input.props.onChange({ currentTarget: { value: 'reader' } });
+  const save = find(form.renderAccount(), row => row.type === 'button');
+  await save.props.onClick();
+  assert.deepEqual(form.writes, [{ ops: [{ op: 'set', path: ['rootBrowserAccount'], value: 'reader' }], revision: 7 }]);
+});
+
+test('a rejected account write reports failure only when the value did not land', async t => {
+  const form = installSettings();
+  t.after(form.dispose);
+  form.serve();
+  t.mock.method(globalThis, 'fetch', async () => response({ root: true }));
+  form.update({ revision: 7 });
+  form.renderAccount();
+  await flush();
+  const save = () => find(form.renderAccount(), row => row.type === 'button').props;
+  const type = value => find(form.renderAccount(), row => row.type === 'input').props.onChange({ currentTarget: { value } });
+  // The Host reloads around the mutation: the reply is a rejection, but the value landed.
+  form.form.mutate = async (ops, revision) => { form.update({ value: { ...form.form.getSnapshot().value, ...{ [ops[0].path[0]]: ops[0].value } }, revision: revision + 1 }); return false; };
+  type('undefined');
+  await save().onClick();
+  assert.equal(save().disabled, true);
+  assert.equal(find(form.renderAccount(), row => row.children.includes('agentSettingsNotSaved')), undefined);
+  // A rejection that leaves the value unchanged is a real failure.
+  form.form.mutate = async () => false;
+  type('');
+  type('other');
+  await save().onClick();
+  assert.ok(find(form.renderAccount(), row => row.children.includes('agentSettingsNotSaved')));
+});
+
+test('root environment reports the resolved account and advisory ACL status', async t => {
+  t.mock.method(globalThis, 'fetch', async url => url.endsWith('/build/status') ? envResponse({ state: 'idle' }) : envResponse({ checks: [
+    ...['dockerConfig', 'dockerCli', 'dockerEngine', 'runnerImage'].map(id => ({ id, status: 'pass' })),
+    { id: 'rootBrowserAccount', status: 'pass', account: { name: 'reader', uid: 1050, gid: 1060 } },
+    { id: 'workspaceAclTools', status: 'warn', code: 'workspace_acl_tools_missing' },
+  ] }));
+  const env = mountEnvironment(t);
+  env.render(); await flush();
+  await env.check().onClick();
+  assert.ok(env.byLabel('workspaceAclToolsMissing'));
+  assert.ok(env.byLabel('environmentCheckWarn'));
+  assert.ok(find(env.render(), row => row.children.some(text => typeof text === 'string' && text.includes('reader') && text.includes('1050'))));
+  assert.equal(env.build(), undefined);
 });
 
 function response(data) {

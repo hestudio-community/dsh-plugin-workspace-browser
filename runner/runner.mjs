@@ -8,7 +8,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import puppeteer from 'puppeteer-core';
 import { AutomationError, createAutomation } from './automation.mjs';
-import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs } from './identity.mjs';
+import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs, workspaceStartupError } from './identity.mjs';
 import { recoverProfile } from './profile-recovery.mjs';
 import { readFrames, send, sendChunk } from './protocol.mjs';
 import { watchWindowTitle } from './window-title.mjs';
@@ -194,8 +194,12 @@ async function setup() {
     phase = 'browser workspace or identity is unavailable';
     const identity = browserIdentity(process.env, await ids('browser'));
     const { uid: browserUid, gid: browserGid } = identity;
-    if (!mountPaths.includes('/workspace')) throw new Error();
-    await exec('setpriv', [...privilegeArgs(identity), 'sh', '-c', 'test -d /workspace && test -r /workspace && test -w /workspace && test -x /workspace']);
+    const workspaceError = await workspaceStartupError(mountPaths, identity, exec);
+    if (workspaceError) {
+      startupCode = workspaceError;
+      if (workspaceError === 'runner_workspace_permission_denied') phase = 'browser lacks workspace directory permissions';
+      throw new Error();
+    }
     const desk = displayIdentity(identity, await ids('dshdesk'));
     const { uid: deskUid, gid: deskGid } = desk;
     const deskArgs = privilegeArgs(desk);

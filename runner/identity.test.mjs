@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { link, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs } from './identity.mjs';
+import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs, workspaceStartupError } from './identity.mjs';
 
 const mapped = { DSH_BROWSER_UID: '1002', DSH_BROWSER_GID: '121', DSH_BROWSER_GROUPS: '0,1002,1003' };
 test('Desktop defaults and complete numeric mappings keep browser and display identities separate', () => {
@@ -14,6 +14,27 @@ test('Desktop defaults and complete numeric mappings keep browser and display id
   assert.deepEqual(privilegeArgs(display), ['--reuid=1003', '--regid=1004', '--clear-groups', '--']);
   for (const invalid of [{ DSH_BROWSER_UID: '1' }, ...['0', '-1', '4294967295', '1e3', '01'].map(uid => ({ ...mapped, DSH_BROWSER_UID: uid })), { ...mapped, DSH_BROWSER_GROUPS: '2,' }])
     assert.throws(() => browserIdentity(invalid, [1001, 1001]));
+});
+
+test('workspace startup distinguishes a browser denial from missing mounts and probe failures', async () => {
+  const identity = browserIdentity(mapped, [1001, 1001]);
+  const mounts = ['/workspace'];
+  let calls = 0;
+  const probe = stdout => async (command, args) => {
+    calls++;
+    assert.equal(command, 'setpriv');
+    assert.deepEqual(args.slice(0, -1), [...privilegeArgs(identity), 'sh', '-c']);
+    return { stdout };
+  };
+  assert.equal(await workspaceStartupError(['/workspace/sub'], identity, probe('denied\n')), 'runner_workspace_invalid');
+  assert.equal(calls, 0);
+  assert.equal(await workspaceStartupError(mounts, identity, probe('')), null);
+  assert.equal(await workspaceStartupError(mounts, identity, probe('denied\n')), 'runner_workspace_permission_denied');
+  assert.equal(await workspaceStartupError(mounts, identity, probe('unexpected')), 'runner_workspace_invalid');
+  for (const code of [1, 127, 'ENOENT']) {
+    const failed = async () => { throw Object.assign(new Error(), { code }); };
+    assert.equal(await workspaceStartupError(mounts, identity, failed), 'runner_workspace_invalid');
+  }
 });
 
 test('migration rejects nested mounts and hard links, leaves symlink targets alone', { skip: process.platform === 'win32' }, async t => {

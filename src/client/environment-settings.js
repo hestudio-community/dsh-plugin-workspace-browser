@@ -9,15 +9,19 @@ const checkLabels = new Map([
   ['runnerImage', 'environmentRunnerImage'],
 ]);
 const checkIds = [...checkLabels.keys()];
+checkLabels.set('rootBrowserAccount', 'rootAccountHeading');
+checkLabels.set('workspaceAclTools', 'environmentAclTools');
 const checkStatuses = new Map([
   ['pass', 'environmentCheckPass'],
   ['fail', 'environmentCheckFail'],
   ['skipped', 'environmentCheckSkipped'],
+  ['warn', 'environmentCheckWarn'],
 ]);
 const checkTags = new Map([
   ['pass', settings.tagPass],
   ['fail', settings.tagFail],
   ['skipped', settings.tagSkipped],
+  ['warn', settings.tagSkipped],
 ]);
 const buildStates = new Set(['idle', 'building', 'succeeded', 'failed']);
 const initialState = { loadingBuild: true };
@@ -44,7 +48,7 @@ function buildAction(state) {
 // that passes the image withdraws it.
 function buildRetry(state) {
   if (state.build !== 'failed') return;
-  if (state.checks?.every(row => row.status === 'pass')) return;
+  if (state.checks?.slice(0, checkIds.length).every(row => row.status === 'pass')) return;
   return 'environmentRetryBuildButton';
 }
 
@@ -52,10 +56,21 @@ function canRequestBuild(state) {
   return buildAction(state) !== undefined || buildRetry(state) !== undefined;
 }
 
-function startEnvironmentSettings(onChange) {
+function validChecks(rows) {
+  if (!Array.isArray(rows) || ![4, 6].includes(rows.length) || !checkIds.every((id, i) =>
+    rows[i]?.id === id && ['pass', 'fail', 'skipped'].includes(rows[i].status))) return false;
+  if (rows.length === 4) return true;
+  const [, , , , accountRow, toolsRow] = rows;
+  const account = accountRow?.account;
+  return accountRow?.id === 'rootBrowserAccount' && (accountRow.status === 'fail' ||
+    (accountRow.status === 'pass' && typeof account?.name === 'string' && Number.isInteger(account.uid) && Number.isInteger(account.gid))) &&
+    toolsRow?.id === 'workspaceAclTools' && ['pass', 'warn'].includes(toolsRow.status);
+}
+
+function startEnvironmentSettings(onChange, checkOnly) {
   const controller = new AbortController();
   const { signal } = controller;
-  let state = initialState;
+  let state = checkOnly ? { loadingBuild: false } : initialState;
   let timer;
 
   function update(patch) {
@@ -71,8 +86,7 @@ function startEnvironmentSettings(onChange) {
       if (signal.aborted) return;
       const runnerVersion = versionFrom(result);
       const { checks } = result;
-      if (!Array.isArray(checks) || checks.length !== checkIds.length || !checks.every((row, i) =>
-        row?.id === checkIds[i] && checkStatuses.has(row.status))) throw new Error('Invalid environment checks');
+      if (!validChecks(checks)) throw new Error('Invalid environment checks');
       update({ checking: false, checks, runnerVersion });
     } catch (error) {
       if (!signal.aborted) update({ checking: false, checks: undefined, checkError: errorMessage(error?.code) ?? 'environmentCheckError' });
@@ -114,20 +128,25 @@ function startEnvironmentSettings(onChange) {
   }
 
   onChange(state);
+  if (checkOnly) return { check, dispose() { controller.abort(); } };
   void refreshStatus();
   return { check, build, retryStatus, dispose() { clearTimeout(timer); controller.abort(); } };
 }
 
-export function makeEnvironmentSettings(React) {
+export function makeInlineEnvironmentCheck(React) {
+  return makeEnvironmentSettings(React, true);
+}
+
+export function makeEnvironmentSettings(React, checkOnly = false) {
   const { createElement: h, useId, useLayoutEffect, useRef, useState } = React;
   return function EnvironmentSettings({ t }) {
     const helpId = useId();
     const active = useRef(null);
     const checkButton = useRef(null);
     const rememberedFocus = useRef(null);
-    const [state, setState] = useState(initialState);
+    const [state, setState] = useState(checkOnly ? { loadingBuild: false } : initialState);
     useLayoutEffect(() => {
-      const controller = startEnvironmentSettings(setState);
+      const controller = startEnvironmentSettings(setState, checkOnly);
       active.current = controller;
       return () => {
         active.current = null;
@@ -140,7 +159,7 @@ export function makeEnvironmentSettings(React) {
     const building = build === 'building';
     // A running build outranks everything else, and a failed one offers its own
     // retry: both states outlive the checks that cleared when the build ran.
-    const buildLabel = building ? 'environmentBuildingButton'
+    const buildLabel = checkOnly ? undefined : building ? 'environmentBuildingButton'
       : buildRetry(state) ?? buildAction(state);
     const buildDisabled = busy || build === 'unknown';
     useLayoutEffect(() => {
@@ -164,7 +183,7 @@ export function makeEnvironmentSettings(React) {
       h('div', { className: settings.card, 'aria-busy': building || undefined },
         h('div', { className: settings.copy },
           runnerVersion ? h('p', { className: settings.version }, t('environmentRunnerVersion'), ': ', h('code', null, runnerVersion)) : null,
-          h('p', { id: helpId, className: settings.detail }, t('environmentBuildHelp')),
+          checkOnly ? null : h('p', { id: helpId, className: settings.detail }, t('environmentBuildHelp')),
           h('div', { className: settings.actions },
             action('check', checks ? 'environmentRecheckButton' : 'environmentCheckButton', settings.buttonOutline,
               busy, () => active.current?.check(), { ref: checkButton }),
@@ -185,9 +204,10 @@ export function makeEnvironmentSettings(React) {
             checking ? h('div', null, t('environmentChecking')) : null),
           buildError ? h('p', { className: settings.error, role: 'alert' }, t(buildError)) : null,
           checkError ? h('p', { className: settings.error, role: 'alert' }, t(checkError)) : null)),
-      checks ? h('ul', { className: settings.list, role: 'list' }, checks.map(({ id, status, code }) => {
+      checks ? h('ul', { className: settings.list, role: 'list' }, checks.map(({ id, status, code, account }) => {
         const problem = environmentMessage(code);
         return h('li', { className: `${settings.card} ${settings.row}`, key: id }, h('div', { className: settings.copy }, t(checkLabels.get(id)),
+          id === 'rootBrowserAccount' && status === 'pass' ? h('code', { className: settings.detail }, `${account.name} (UID ${account.uid}, GID ${account.gid})`) : null,
           problem ? h('div', { className: settings.detail }, t(problem)) : null),
         h('span', { className: `${settings.tag} ${checkTags.get(status)}` }, t(checkStatuses.get(status))));
       })) : null);

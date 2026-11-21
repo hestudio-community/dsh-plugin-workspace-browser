@@ -101,6 +101,14 @@ test('view request rejects legacy bodies and unresolved Sessions without startin
     assert.equal(status, 400);
     assert.equal(body.code, 'invalid_body');
   }
+  for (const path of ['/workspace-access/prepare', '/workspace-access/grant']) {
+    assert.equal((await request({ sessionId: 'valid', path: '/etc', uid: '1001' }, path)).body.code, 'invalid_body');
+    const payload = path.endsWith('/grant') ? { sessionId: 'valid', token: 'unused' } : { sessionId: 'valid' };
+    assert.equal((await request(payload, path)).body.code, 'access_denied');
+  }
+  const platform = await request({}, '/environment/platform');
+  assert.equal(platform.status, 200);
+  assert.deepEqual(platform.body, { ok: true, root: process.platform === 'linux' && process.geteuid() === 0 });
   rows.get('a').sessionIds.pop();
   for (const sessionId of ['formerly-bound', 'unknown', 'invalid/id', 'duplicate', 'invalid-workspace']) {
     const unresolved = await request({ sessionId });
@@ -429,6 +437,17 @@ test('failed replacement is retryable, but post-ready exit and membership loss a
   assert.deepEqual(pool.status('two', first.runId), { state: 'closed' });
   await assert.rejects(pool.issue('two', 'owner', first.runId, retry.generation), { code: 'browser_closed' });
   assert.equal(launched.length, 3);
+});
+
+test('initial runner workspace permission denial reaches the view request', async (t) => {
+  const row = { id: 'w', sessionIds: ['one'] };
+  const code = 'runner_workspace_permission_denied';
+  const pool = createPool({ list: () => [row], get: () => row }, () => ({
+    ready: Promise.reject(new BrowserError(code, 'Chromium runner could not start.', 503)),
+    stop: async () => {},
+  }));
+  t.after(() => pool.dispose());
+  await assert.rejects(pool.issue('one', 'owner'), { code, status: 503 });
 });
 
 test('restarting after a rejected stop retries cleanup before launching', async (t) => {

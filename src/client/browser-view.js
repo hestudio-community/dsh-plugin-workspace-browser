@@ -3,6 +3,8 @@ import { admissionMessage, environmentMessage, post } from './http.js';
 import { createStreamChannel } from './stream.js';
 import { accessErrors, bar, fill, overlay, viewport } from './styles.js';
 import { renderSwitch } from './switch.js';
+import { makeInlineEnvironmentCheck } from './environment-settings.js';
+import { renderSettingsStyles, settings } from './settings-styles.js';
 
 const HANDSHAKE_MS = 30_000;
 const STATUS_MS = 2000;
@@ -12,6 +14,7 @@ const requestMessages = new Map([
   ['session_workspace_missing', 'sessionWorkspaceMissing'],
   ['session_workspace_changed', 'sessionWorkspaceChanged'],
   ['runner_workspace_invalid', 'runnerWorkspaceInvalid'],
+  ['runner_workspace_permission_denied', 'runnerWorkspacePermissionDenied'],
   ['runner_unavailable', 'runnerUnavailable'],
   ['runner_bundle_invalid', 'runnerBundleInvalid'],
   ['runner_image_load_failed', 'runnerImageLoadFailed'],
@@ -51,7 +54,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
 
   function publish() {
     if (!disposed) onChange({
-      phase, actionError,
+      phase, actionError, generation, busy: !!action,
       canRestart: !action && (runState === 'ready' || runState === 'failed'),
       canClose: !action && !!generation && !closed,
       canRetry: !action && !closed && (runState === 'failed' || (!display && !viewRequest
@@ -315,11 +318,103 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
   return { setVisible, retry, mutate, blur: () => display?.rfb?.blur(), dispose };
 }
 
+// One mounted failure surface owns one preview. Neither disappearance nor cancel
+// submits a token; even a fetch implementation that ignores abort cannot retry.
+export function startGrantAccess({ sessionId, tabSignal, change, retry, request = post }) {
+  const controller = new AbortController();
+  const { signal } = controller;
+  let preview, timer, busy = false;
+  function dispose() {
+    controller.abort();
+    clearTimeout(timer);
+    preview = undefined;
+    tabSignal.removeEventListener('abort', dispose);
+  }
+  if (tabSignal.aborted) dispose();
+  else tabSignal.addEventListener('abort', dispose, { once: true });
+  function update(error) { if (!signal.aborted) change({ preview, busy, error }); }
+  function cancel() { if (!busy) { clearTimeout(timer); preview = undefined; update(); } }
+  async function run(grant) {
+    if (signal.aborted || busy || (grant ? !preview : !!preview)) return;
+    busy = true;
+    clearTimeout(timer);
+    update();
+    try {
+      const result = await request(grant ? '/workspace-access/grant' : '/workspace-access/prepare',
+        grant ? { sessionId, token: preview.token } : { sessionId }, signal);
+      if (signal.aborted) return;
+      if (grant) {
+        if (result?.ok !== true) throw new Error('Invalid grant result');
+        preview = undefined;
+        // Consume local authority before invoking an external callback.
+        update();
+        retry();
+      } else {
+        if (!token(result?.token) || !token(result.path) || !token(result.account)
+          || !Number.isSafeInteger(result.uid) || result.uid <= 0) throw new Error('Invalid workspace preview');
+        preview = result;
+        timer = setTimeout(() => { preview = undefined; update('workspaceAccessStale'); }, 30000);
+      }
+      busy = false; update();
+    } catch (error) {
+      busy = false; preview = undefined;
+      update(message(error?.code));
+    }
+  }
+  return { prepare: () => run(false), confirm: () => run(true), cancel, dispose };
+}
+
+function makeGrantAccess({ createElement: h, useId, useLayoutEffect, useRef, useState }) {
+  return function GrantAccess({ sessionId, tabSignal, t, retry, scope }) {
+    const title = useId(), dialog = useRef(null), trigger = useRef(null), cancelButton = useRef(null), owner = useRef(null);
+    const [state, setState] = useState({});
+    useLayoutEffect(() => {
+      const api = startGrantAccess({ sessionId, tabSignal, change: setState, retry });
+      owner.current = api;
+      setState({});
+      queueMicrotask(() => {
+        if (owner.current !== api || tabSignal.aborted) return;
+        if (scope.current?.sessionId === sessionId && scope.current.tabSignal === tabSignal) return;
+        scope.current = { sessionId, tabSignal };
+        void api.prepare();
+      });
+      return () => { owner.current = null; api.dispose(); };
+    }, [sessionId, tabSignal, scope]);
+    const { preview, busy, error } = state;
+    useLayoutEffect(() => {
+      if (!preview || tabSignal.aborted) return;
+      const node = dialog.current;
+      node.showModal(); cancelButton.current?.focus();
+      const close = () => { if (node.open) node.close(); };
+      tabSignal.addEventListener('abort', close, { once: true });
+      return () => { tabSignal.removeEventListener('abort', close); close(); trigger.current?.focus(); };
+    }, [preview, tabSignal]);
+    const button = (label, run, variant, ref) => h('button', { type: 'button', disabled: !!busy,
+      ref, className: `${settings.button} ${variant}`, onClick: run }, t(label));
+    return h('div', null,
+      button('grantHeading', () => void owner.current?.prepare(), settings.buttonOutline, trigger),
+      error ? h('div', { role: 'alert' }, t(error)) : null,
+      preview ? h('dialog', { ref: dialog, 'aria-labelledby': title, className: settings.card,
+        style: { maxWidth: 'min(32rem, 90vw)', overflowWrap: 'anywhere', color: 'var(--dsw-alias-label-primary, CanvasText)' },
+        onCancel(e) { e.preventDefault(); owner.current?.cancel(); } },
+        h('h2', { id: title, className: settings.heading }, t('grantHeading')),
+        h('p', null, t('grantPath'), ': ', h('bdi', { dir: 'ltr' }, preview.path)),
+        h('p', null, t('grantAccount'), ': ', h('bdi', null, preview.account), ` (UID ${preview.uid})`),
+        h('p', null, t('grantRisk')),
+        h('div', { className: settings.actions },
+          button('grantCancel', () => owner.current?.cancel(), settings.buttonOutline, cancelButton),
+          button('grantConfirm', () => void owner.current?.confirm(), settings.buttonPrimary))) : null);
+  };
+}
+
 export function makeBrowserView(React, RFB, menu) {
   const { createElement: h, useId, useLayoutEffect, useRef, useState } = React;
   const useAgentAccess = makeUseAgentAccess(React);
+  const InlineEnvironmentCheck = makeInlineEnvironmentCheck(React);
+  const GrantAccess = makeGrantAccess(React);
   return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed, onTitle, renderFactorySlot }) {
     const switchId = useId();
+    const grantScope = useRef(null);
     const target = useRef(null);
     const barRef = useRef(null);
     const commandsRef = useRef(null);
@@ -338,7 +433,7 @@ export function makeBrowserView(React, RFB, menu) {
         client.dispose();
       };
     }, [sessionId, tabSignal, openWebSocket, onTitle]);
-    useLayoutEffect(() => { connection.current?.setVisible(visible); }, [sessionId, tabSignal, openWebSocket, visible]);
+    useLayoutEffect(() => { connection.current?.setVisible(visible); }, [sessionId, tabSignal, openWebSocket, onTitle, visible]);
 
     const connected = visible && state.phase === 'connected';
     const access = useAgentAccess({ sessionId, tabSignal, visible, t });
@@ -378,6 +473,14 @@ export function makeBrowserView(React, RFB, menu) {
           },
         }),
         connected ? null : h('div', { style: overlay },
-          h('div', { role: state.canRetry ? 'alert' : 'status' }, t(state.phase)))));
+          h('div', { role: state.canRetry ? 'alert' : 'status' }, t(state.phase)),
+          visible && ['rootAccountMissing', 'rootAccountInvalid', 'workspaceGrantRequired'].includes(state.phase)
+            ? renderSettingsStyles(h) : null,
+          visible && !state.busy && ['rootAccountMissing', 'rootAccountInvalid'].includes(state.phase)
+            ? h(InlineEnvironmentCheck, { t }) : null,
+          visible && !state.busy && state.phase === 'workspaceGrantRequired'
+            ? h(GrantAccess, { key: JSON.stringify([sessionId, state.generation]), sessionId, tabSignal, t,
+              scope: grantScope, retry: () => connection.current?.retry() }) : null)));
+
   };
 }

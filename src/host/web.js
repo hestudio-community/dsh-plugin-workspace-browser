@@ -11,8 +11,11 @@ const controlFields = ['sessionId', 'runId', 'generation'];
 const methods = {
   '/view': [sessionFields, controlFields],
   '/browser/status': [['sessionId', 'runId']], '/browser/restart': [controlFields], '/browser/close': [controlFields],
+  '/workspace-access/prepare': [sessionFields], '/workspace-access/grant': [['sessionId', 'token']],
   '/agent/status': [sessionFields], '/agent/grant': [sessionFields], '/agent/revoke': [sessionFields],
   '/environment/check': [[]], '/environment/build': [[]], '/environment/build/status': [[]],
+  // Capability probe for the settings page. It reads no configuration and runs no Docker command.
+  '/environment/platform': [[]],
 };
 
 function localOrigin(req) {
@@ -96,7 +99,7 @@ function rejectUpgrade(socket, status) {
   socket.end(`HTTP/1.1 ${status} ${name}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
-export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins = () => []) {
+export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins = () => [], workspaceAccess) {
   configuredOrigins(getAllowedWebOrigins()); // Reject malformed initial configuration before registering routes.
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: WS_LIMIT, perMessageDeflate: false, clientTracking: false });
   const connections = new Set();
@@ -118,12 +121,18 @@ export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins 
       switch (path) {
         case '/view': result = await pool.issue(sessionId, peer.id, runId, generation); break;
         case '/browser/status': result = pool.status(sessionId, runId); break;
-        case '/browser/restart': result = pool.restart(sessionId, runId, generation); break;
+        case '/browser/restart': result = pool.restart(sessionId, runId, generation, peer.id); break;
         case '/browser/close': result = pool.close(sessionId, runId, generation); break;
         case '/agent/status': result = agent.status(sessionId); break;
         case '/agent/grant': result = agent.grant(sessionId); break;
         case '/agent/revoke': result = agent.revoke(sessionId); break;
+        case '/workspace-access/prepare':
+        case '/workspace-access/grant':
+          if (!workspaceAccess) throw new BrowserError('access_denied', 'Workspace authorization is unavailable.', 403);
+          result = path.endsWith('/prepare') ? await workspaceAccess.prepare(sessionId, peer.id) : await workspaceAccess.grant(sessionId, peer.id, value.token);
+          break;
         case '/environment/check': result = await environment.check(); break;
+        case '/environment/platform': result = { root: process.platform === 'linux' && process.geteuid() === 0 }; break;
         case '/environment/build': result = environment.startBuild(); break;
         case '/environment/build/status': result = environment.buildStatus(); break;
       }

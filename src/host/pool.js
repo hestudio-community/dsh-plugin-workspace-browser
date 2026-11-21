@@ -9,7 +9,8 @@ const MAX_VIEWS = 4;
 const startupCodes = new Set([
   'docker_cli_missing', 'docker_cli_unavailable', 'docker_config_invalid', 'docker_engine_unavailable', 'docker_engine_incompatible',
   'runner_image_missing', 'runner_image_incompatible', 'runner_start_failed', 'runner_start_timeout', 'runner_isolation_failed',
-  'docker_endpoint_unsupported', 'docker_identity_unsupported', 'runner_workspace_invalid', 'runner_display_failed', 'runner_profile_recovery_failed', 'runner_profile_in_use', 'runner_unavailable',
+  'root_browser_account_missing', 'root_browser_account_invalid', 'runner_workspace_grant_required',
+  'docker_endpoint_unsupported', 'docker_identity_unsupported', 'runner_workspace_invalid', 'runner_workspace_permission_denied', 'runner_display_failed', 'runner_profile_recovery_failed', 'runner_profile_in_use', 'runner_unavailable',
 ]);
 
 const missingSession = () => new BrowserError('session_workspace_missing', 'The session does not belong to a unique registered workspace.', 404);
@@ -18,7 +19,7 @@ const generationChanged = () => new BrowserError('browser_generation_changed', '
 const unavailable = () => new BrowserError('plugin_unavailable', 'The browser plugin is stopping.', 503);
 const startupFailure = () => new BrowserError('runner_start_failed', 'Chromium runner could not start.', 503);
 
-export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => DEFAULT_IDLE_TIMEOUT_MINUTES) {
+export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => DEFAULT_IDLE_TIMEOUT_MINUTES, onWorkspaceDenial = () => {}) {
   const rooms = new Map();
   const stopping = new Set();
   const tickets = new Map();
@@ -124,6 +125,7 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       if (workspace?.id !== room.id) { retire(room); return; }
       try {
         // Runner callbacks can fire before startRunner returns. Finish installing the attempt first.
+        attempt.workspace = { id: room.id, path: workspace.path };
         const runner = attempt.runner = startRunner(room.id, (error) => queueMicrotask(() => fail(error)), workspace.path);
         Promise.resolve(runner.ready).then(() => {
           if (!isCurrent() || room.state === 'failed') return;
@@ -197,8 +199,18 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       if (!id) throw runId === undefined ? missingSession() : browserClosed();
       const room = runId === undefined ? requireRoom(id) : boundRoom(id, runId, generation);
       const attempt = room.attempt;
-      if (room.state === 'failed') return { runId: room.runId, ...snapshot(room) };
-      await attempt.ready;
+      const noteDenial = code => {
+        const current = findSession(sessionId);
+        if (code === 'runner_workspace_grant_required' && current?.id === id && current.path === attempt.workspace?.path) {
+          onWorkspaceDenial(sessionId, peerId, attempt.workspace);
+        }
+      };
+      if (room.state === 'failed') {
+        noteDenial(room.code);
+        return { runId: room.runId, ...snapshot(room) };
+      }
+      try { await attempt.ready; }
+      catch (error) { noteDenial(error?.code); throw error; }
       if (findSession(sessionId)?.id !== id) {
         if (runId !== undefined) throw browserClosed();
         throw new BrowserError('session_workspace_changed', 'The session workspace changed while opening the browser. Retry from the session.', 409);
@@ -214,12 +226,18 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       const room = rooms.get(findSession(sessionId)?.id);
       return room && room.runId === runId ? snapshot(room) : { state: 'closed' };
     },
-    restart(sessionId, runId, generation) {
+    restart(sessionId, runId, generation, peerId) {
       const room = boundRoom(findSession(sessionId)?.id, runId, generation);
       if (room.state !== 'ready' && room.state !== 'failed') {
         throw new BrowserError('browser_busy', 'The workspace browser is already starting. Retry shortly.', 409);
       }
       start(room, room.attempt);
+      const attempt = room.attempt;
+      if (peerId) attempt.ready.catch(error => {
+        const workspace = findSession(sessionId);
+        if (error?.code === 'runner_workspace_grant_required' && room.attempt === attempt &&
+            workspace?.id === room.id && workspace.path === attempt.workspace?.path) onWorkspaceDenial(sessionId, peerId, attempt.workspace);
+      });
       return snapshot(room);
     },
     close(sessionId, runId, generation) {

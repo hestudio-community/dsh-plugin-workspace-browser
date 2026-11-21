@@ -1,4 +1,5 @@
-import { stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserError } from '../shared/protocol.js';
@@ -32,7 +33,17 @@ export function environmentError(code) {
   return new BrowserError(code, messages[code], 503);
 }
 
-export function createRunnerEnvironment({ configure, command, signal, context = defaultContext, inputStat = stat, runnerVersion = RUNNER_VERSION }) {
+async function detectAclTools() {
+  try {
+    for (const path of ['/usr/bin/getfacl', '/usr/bin/setfacl']) {
+      if (!(await stat(path)).isFile()) return false;
+      await access(path, constants.X_OK);
+    }
+    return true;
+  } catch { return false; }
+}
+
+export function createRunnerEnvironment({ configure, command, signal, rootAccount, aclTools = detectAclTools, context = defaultContext, inputStat = stat, runnerVersion = RUNNER_VERSION }) {
   const imageTag = runnerImageTag(runnerVersion);
   let checking;
   let building;
@@ -90,6 +101,22 @@ export function createRunnerEnvironment({ configure, command, signal, context = 
       }
     }
     signal.throwIfAborted();
+    if (includeImage && rootAccount) {
+      try {
+        const account = await rootAccount();
+        checks.push({ id: 'rootBrowserAccount', status: 'pass', account });
+        if (docker) docker.rootAccount = account;
+      } catch (failure) {
+        if (!(failure instanceof BrowserError)) throw failure;
+        // Root sessions always direct the owner to configuration first. The
+        // complete environment report still includes independent Docker failures.
+        error = failure;
+        checks.push({ id: 'rootBrowserAccount', status: 'fail', code: failure.code });
+      }
+      checks.push(await aclTools() ? { id: 'workspaceAclTools', status: 'pass' }
+        : { id: 'workspaceAclTools', status: 'warn', code: 'workspace_acl_tools_missing' });
+      signal.throwIfAborted();
+    }
     return { checks, error, docker, image };
   }
 

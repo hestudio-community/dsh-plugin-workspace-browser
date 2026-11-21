@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
+import { resolveRootAccount } from '../src/host/root-account.js';
 import { browserIdentity, workspaceMount } from '../src/host/workspace.js';
 import { dockerCommand, createRunnerLauncher } from '../src/host/runner.js';
 import { IMAGE_PLATFORM, RUNNER_IMAGE, RUNNER_PROTOCOL, RUNNER_VERSION } from '../src/shared/runner-image.js';
@@ -78,7 +79,9 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
     return child;
   }
   const host = { platform: 'linux', env: {}, geteuid: () => 1001, getegid: () => 1002, getgroups: () => [1002, 123] };
-  const launcher = (hostOverrides = {}) => createRunnerLauncher({}, { queryDocker, spawnDocker, host: { ...host, ...hostOverrides } });
+  const launcher = (hostOverrides = {}, overrides = {}, config = { rootBrowserAccount: 'browser-only' }) => createRunnerLauncher(config, {
+    queryDocker, spawnDocker, host: { ...host, ...hostOverrides }, ...overrides,
+  });
   return { containers, launcher, launches, probes, stops };
 }
 
@@ -117,20 +120,45 @@ test('workspace source is an existing canonical directory encoded as one CSV fie
   }
 });
 
-test('root Linux Hosts use the image identity regardless of their groups', () => {
-  for (const [gid, groups] of [[0, []], [0, [0, 27]], [42, [42, 27]]]) {
-    assert.deepEqual(browserIdentity({ platform: 'linux', geteuid: () => 0, getegid: () => gid, getgroups: () => groups }), []);
-  }
-});
+const account = { name: 'browser-only', uid: 600, gid: 601 };
+const rootHost = { geteuid: () => 0, getegid: () => 0, getgroups: () => [0, 27] };
+const rootOptions = { resolveAccount: async name => { assert.equal(name, account.name); return account; }, aclTools: async () => false };
 
-test('a root Linux Host launches Docker without browser identity overrides', async () => {
+test('root launcher uses only the configured identity; absent ACL tools are advisory', async () => {
   const engine = fakeEngine();
-  const runner = start(engine.launcher({ geteuid: () => 0, getegid: () => 0, getgroups: () => [0, 27] }), 'root');
+  const launcher = engine.launcher(rootHost, rootOptions);
+  assert.deepEqual((await launcher.environment.check()).checks.slice(-2), [
+    { id: 'rootBrowserAccount', status: 'pass', account }, { id: 'workspaceAclTools', status: 'warn', code: 'workspace_acl_tools_missing' },
+  ]);
+  assert.equal(engine.launches.length, 0);
+  const runner = start(launcher, 'root');
   try {
     await runner.ready;
     const [{ args }] = engine.launches;
-    assert.deepEqual(args.filter(arg => /DSH_BROWSER_(UID|GID|GROUPS)\b/.test(arg)), []);
+    assert.deepEqual(args.filter(arg => /DSH_BROWSER_(UID|GID|GROUPS)\b/.test(arg)), ['DSH_BROWSER_UID=600', 'DSH_BROWSER_GID=601', 'DSH_BROWSER_GROUPS=']);
   } finally { await runner.stop(); }
+});
+
+test('a volatile account setting is read at every probe without a Host restart', async () => {
+  const engine = fakeEngine();
+  let current = 'browser-only';
+  const seen = [];
+  const launcher = engine.launcher(rootHost, {
+    resolveAccount: async name => { seen.push(name); return account; }, aclTools: async () => true,
+  }, { rootBrowserAccount: { get: () => current } });
+  await launcher.environment.check();
+  current = 'browser-two';
+  await launcher.environment.check();
+  assert.deepEqual(seen, ['browser-only', 'browser-two']);
+});
+
+test('only a permission startup frame for a validated root account requests a grant', async () => {
+  const engine = fakeEngine({ frame: { type: 'startup-error', code: 'runner_workspace_permission_denied' } });
+  await assert.rejects(start(engine.launcher(rootHost, rootOptions), 'root').ready, { code: 'runner_workspace_grant_required' });
+  const invalid = engine.launcher(rootHost, { ...rootOptions, resolveAccount: () => resolveRootAccount('') });
+  assert.deepEqual((await invalid.environment.check()).checks.at(-2), { id: 'rootBrowserAccount', status: 'fail', code: 'root_browser_account_missing' });
+  await assert.rejects(start(invalid, 'invalid').ready, { code: 'root_browser_account_missing' });
+  assert.equal(engine.launches.length, 1);
 });
 
 test('identity rejects unmappable IDs, preserves actual groups, and omits mapping on Desktop', () => {
@@ -237,7 +265,7 @@ test('separate profile volumes run independently with unchanged Docker sandbox f
 });
 
 test('startup frames keep recovery and sandbox failures distinct', async () => {
-  for (const code of ['runner_profile_recovery_failed', 'runner_isolation_failed', 'runner_start_failed']) {
+  for (const code of ['runner_profile_recovery_failed', 'runner_isolation_failed', 'runner_workspace_invalid', 'runner_workspace_permission_denied', 'runner_start_failed']) {
     const engine = fakeEngine({ frame: { type: 'startup-error', code } });
     const runner = start(engine.launcher(), code);
     await assert.rejects(runner.ready, { code, status: 503 });
