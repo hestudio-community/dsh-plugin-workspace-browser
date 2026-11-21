@@ -78,7 +78,7 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
     return child;
   }
   const host = { platform: 'linux', env: {}, geteuid: () => 1001, getegid: () => 1002, getgroups: () => [1002, 123] };
-  const launcher = () => createRunnerLauncher({}, { queryDocker, spawnDocker, host });
+  const launcher = (hostOverrides = {}) => createRunnerLauncher({}, { queryDocker, spawnDocker, host: { ...host, ...hostOverrides } });
   return { containers, launcher, launches, probes, stops };
 }
 
@@ -117,10 +117,26 @@ test('workspace source is an existing canonical directory encoded as one CSV fie
   }
 });
 
-test('identity rejects root or unmappable IDs, preserves actual groups, and omits mapping on Desktop', () => {
+test('root Linux Hosts use the image identity regardless of their groups', () => {
+  for (const [gid, groups] of [[0, []], [0, [0, 27]], [42, [42, 27]]]) {
+    assert.deepEqual(browserIdentity({ platform: 'linux', geteuid: () => 0, getegid: () => gid, getgroups: () => groups }), []);
+  }
+});
+
+test('a root Linux Host launches Docker without browser identity overrides', async () => {
+  const engine = fakeEngine();
+  const runner = start(engine.launcher({ geteuid: () => 0, getegid: () => 0, getgroups: () => [0, 27] }), 'root');
+  try {
+    await runner.ready;
+    const [{ args }] = engine.launches;
+    assert.deepEqual(args.filter(arg => /DSH_BROWSER_(UID|GID|GROUPS)\b/.test(arg)), []);
+  } finally { await runner.stop(); }
+});
+
+test('identity rejects unmappable IDs, preserves actual groups, and omits mapping on Desktop', () => {
   const host = { platform: 'linux', geteuid: () => 1001, getegid: () => 1002, getgroups: () => [1002, 0, 42, 42] };
   assert.deepEqual(browserIdentity(host), ['--env', 'DSH_BROWSER_UID=1001', '--env', 'DSH_BROWSER_GID=1002', '--env', 'DSH_BROWSER_GROUPS=0,42']);
-  for (const override of [{ geteuid: () => 0 }, { getegid: () => 0 }, { getgroups: () => [0xffffffff] }]) {
+  for (const override of [{ geteuid: () => -1 }, { getegid: () => 0 }, { getegid: () => 0xffffffff }, { getgroups: () => [0xffffffff] }]) {
     assert.throws(() => browserIdentity({ ...host, ...override }), { code: 'docker_identity_unsupported' });
   }
   for (const platform of ['win32', 'darwin']) assert.deepEqual(browserIdentity({ platform }), []);

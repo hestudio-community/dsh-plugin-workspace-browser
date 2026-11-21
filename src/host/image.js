@@ -16,7 +16,7 @@ export function environmentError(code) {
   const messages = {
     docker_config_invalid: 'The Docker CLI and seccomp profile must use valid absolute paths.',
     docker_endpoint_unsupported: 'Select the default local Docker endpoint; remote engines cannot mount this workspace.',
-    docker_identity_unsupported: 'Use a non-root Linux Host account with a rootful Docker engine and no user namespace remapping, or use Docker Desktop on Windows or macOS.',
+    docker_identity_unsupported: 'On Linux, use a local rootful Docker engine without user namespace remapping. On Windows or macOS, use local Docker Desktop.',
     runner_workspace_invalid: 'Verify that the registered workspace still names the original directory and Docker can share it with read/write access.',
     docker_cli_missing: 'The local Docker CLI was not found.',
     docker_cli_unavailable: 'The local Docker CLI could not be run.',

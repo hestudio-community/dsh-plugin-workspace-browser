@@ -18,9 +18,12 @@ export async function workspaceMount(path, { platform = process.platform, canoni
 export function browserIdentity(host = process) {
   if (host.platform === 'win32' || host.platform === 'darwin') return [];
   if (host.platform !== 'linux') throw environmentError('docker_identity_unsupported');
-  const uid = host.geteuid(), gid = host.getegid();
+  const uid = host.geteuid();
+  // A root Host uses the image's non-root browser account, not the Host's groups.
+  if (uid === 0) return [];
+  const gid = host.getegid();
   const groups = [...new Set(host.getgroups())].filter(id => id !== gid);
-  if (![uid, gid, ...groups].every(id => Number.isInteger(id) && id >= 0 && id < 0xffffffff) || !uid || !gid) {
+  if (![uid, gid, ...groups].every(id => Number.isInteger(id) && id >= 0 && id < 0xffffffff) || !gid) {
     throw environmentError('docker_identity_unsupported');
   }
   return ['--env', `DSH_BROWSER_UID=${uid}`, '--env', `DSH_BROWSER_GID=${gid}`, '--env', `DSH_BROWSER_GROUPS=${groups.join(',')}`];
