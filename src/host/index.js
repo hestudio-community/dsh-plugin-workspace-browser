@@ -10,7 +10,7 @@ export const inject = ['workspaceRegistry', 'connection', 'webServer'];
 export const Config = Schema.object({
   agentEnabled: Schema.boolean().default(true).volatile().description(`Register the ${PROJECT_ID} tool. Each Session must explicitly enable access to its workspace browser.`),
   idleTimeoutMinutes: Schema.natural().max(1440).default(DEFAULT_IDLE_TIMEOUT_MINUTES).volatile().description('Minutes to keep a browser after its last workspace view disconnects (0–1440). Set to 0 to disable idle expiry. Changes apply without restarting the browser.'),
-  allowedWebOrigins: Schema.array(Schema.string()).default([]).description('Exact public HTTP(S) origins of trusted reverse-proxied DSH Web deployments. Leave empty for local access only.'),
+  allowedWebOrigins: Schema.array(Schema.string()).default([]).volatile().description('Exact public HTTP(S) origins of trusted reverse-proxied DSH Web deployments. Leave empty for local access only.'),
   dockerExecutable: Schema.string().default('').description('Absolute path to the local Docker CLI. Leave empty for the platform default.'),
   seccompProfile: Schema.string().default('').description('Absolute path to a reviewed Docker seccomp profile. Leave empty to use the bundled Chromium profile.'),
   profileNamespace: Schema.string().pattern(/^[A-Za-z0-9_-]{1,64}$/).default('default').description('Use a stable, distinct value for each DSH profile that shares this Docker engine.'),
@@ -34,7 +34,7 @@ export function apply(ctx, config) {
       }
     }
     try {
-      dropWeb = registerWeb(ctx, pool, agent, runner.environment, config.allowedWebOrigins);
+      dropWeb = registerWeb(ctx, pool, agent, runner.environment, () => config.allowedWebOrigins.get());
       dropConfig = ctx.on('loader/volatile-update', () => {
         void agent.setEnabled(config.agentEnabled.get())?.catch((error) => {
           ctx.logger.error(`Could not update the ${PROJECT_ID} tool: %s`, error);

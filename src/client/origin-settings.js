@@ -21,7 +21,7 @@ export function makeOriginSettings(React, form) {
     const id = useId();
     const snapshot = useSyncExternalStore(subscribe, read);
     const { revision, status } = snapshot;
-    const { allowedWebOrigins: value = [] } = snapshot.value ?? {};
+    const value = snapshot.value?.allowedWebOrigins;
     const ready = status === 'ready' && Array.isArray(value) && value.every(entry => typeof entry === 'string');
     const writable = ready && snapshot.writable && revision !== undefined;
     const [draft, setDraft] = useState(null);

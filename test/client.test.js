@@ -176,7 +176,7 @@ test('titles passively follow only their own tab occurrence, leaving the launche
 function installSettings() {
   let contribution;
   let Component;
-  let snapshot = { status: 'ready', value: { agentEnabled: true, idleTimeoutMinutes: 2 }, writable: true, revision: 1 };
+  let snapshot = { status: 'ready', value: { agentEnabled: true, idleTimeoutMinutes: 2, allowedWebOrigins: [] }, writable: true, revision: 1 };
   const writes = [];
   const form = {
     getSnapshot: () => snapshot,
@@ -360,6 +360,16 @@ test('reverse proxy settings default to empty and save only canonical origins at
   assert.deepEqual(writes, [[first, second], [second], []].map((value, i) => ({
     ops: [{ op: 'set', path: ['allowedWebOrigins'], value }], revision: 7 + i,
   })));
+});
+
+test('reverse proxy settings cannot edit a field omitted by the served schema', async (t) => {
+  const { controls, update, writes } = installOriginSettings(t);
+  update({ value: { idleTimeoutMinutes: 2, agentEnabled: true } });
+  const { input, save, notice } = controls();
+  assert.equal(notice, 'agentSettingsUnavailable');
+  assert.ok(input.disabled && save.disabled);
+  await save.onClick();
+  assert.deepEqual(writes, []);
 });
 
 test('reverse proxy settings reject an invalid line without partially saving and guard stale and read-only edits', async (t) => {

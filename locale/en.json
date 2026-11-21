@@ -77,7 +77,7 @@
   "providerConflict": "Browser tool name conflict.",
   "originHeading": "Remote Web access",
   "originLabel": "Allowed DSH Web origins",
-  "originDescription": "Enter one trusted HTTP(S) origin per line, for example https://dsh.example.com. Include any non-default port, but no path or wildcard. Leave empty for local access only. Saving restarts the plugin and may interrupt active browser sessions. Removing the origin you are using may prevent you from accessing the workspace browser here.",
+  "originDescription": "Enter one trusted HTTP(S) origin per line, for example https://dsh.example.com. Include any non-default port, but no path or wildcard. Leave empty for local access only. Changes apply without restarting the plugin. Removing your current origin blocks new requests and connections from it; existing display streams stay open.",
   "originInvalidLine": "Invalid origin on line:",
   "originSave": "Save origins",
   "idleHeading": "Browser lifetime",

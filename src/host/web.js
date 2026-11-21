@@ -96,8 +96,8 @@ function rejectUpgrade(socket, status) {
   socket.end(`HTTP/1.1 ${status} ${name}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
-export function registerWeb(ctx, pool, agent, environment, allowedWebOrigins = []) {
-  const allowedOrigins = configuredOrigins(allowedWebOrigins);
+export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins = () => []) {
+  configuredOrigins(getAllowedWebOrigins()); // Reject malformed initial configuration before registering routes.
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: WS_LIMIT, perMessageDeflate: false, clientTracking: false });
   const connections = new Set();
   const disposers = [];
@@ -106,7 +106,7 @@ export function registerWeb(ctx, pool, agent, environment, allowedWebOrigins = [
   const handle = (path, fields) => async (req, res) => {
     try {
       if (stopped) throw new BrowserError('plugin_unavailable', 'The browser plugin is stopping.', 503);
-      const peer = admit(ctx.connection, req, allowedOrigins, true);
+      const peer = admit(ctx.connection, req, configuredOrigins(getAllowedWebOrigins()), true);
       if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
         throw new BrowserError('invalid_method', 'Expected POST.', 405);
@@ -140,7 +140,7 @@ export function registerWeb(ctx, pool, agent, environment, allowedWebOrigins = [
   const upgrade = (req, socket, head) => {
     if (stopped || connections.size >= 32) { rejectUpgrade(socket, 503); return; }
     let peer;
-    try { peer = admit(ctx.connection, req, allowedOrigins); }
+    try { peer = admit(ctx.connection, req, configuredOrigins(getAllowedWebOrigins())); }
     catch (error) { rejectUpgrade(socket, error.status || 403); return; }
     wsServer.handleUpgrade(req, socket, head, (ws) => {
       let stream;

@@ -138,6 +138,7 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   let upgrade;
   let issued = 0;
   let admitted = 0;
+  let allowedOrigins = [];
   const environmentCalls = [];
   const runnerVersion = RUNNER_VERSION;
   const checks = ['dockerConfig', 'dockerCli', 'dockerEngine', 'runnerImage'].map(id => ({ id, status: 'pass' }));
@@ -189,7 +190,7 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
       environmentCalls.push('status');
       return { runnerVersion, state: 'idle' };
     },
-  }, ['https://ui.example.test']);
+  }, () => allowedOrigins);
   t.after(dispose);
 
   assert.equal(DESKTOP_REQUEST_HEADER, 'x-dsh-plugin-workspace-browser-desktop');
@@ -303,6 +304,9 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
     assert.equal(upgradeStatus(merged), 403);
     assert.equal(admitted, before);
   }
+  assert.equal((await request({ ...proxy, headers: proxied })).body.code, 'origin_denied');
+  assert.equal(upgradeStatus(proxied), 403);
+  allowedOrigins = [proxied.origin];
   for (const [cookie, status] of [[undefined, 401], ['guest', 403], ['other', 403]]) {
     const headers = { ...proxied, cookie };
     const reply = await request({ ...proxy, headers });
@@ -311,6 +315,11 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
     assert.equal(upgradeStatus(headers), status);
   }
   assert.deepEqual((await request({ ...proxy, headers: proxied })).body, expectedView);
+  allowedOrigins = [];
+  const before = admitted;
+  assert.equal((await request({ ...proxy, headers: proxied })).body.code, 'origin_denied');
+  assert.equal(upgradeStatus({ ...proxied, cookie: 'owner' }), 403);
+  assert.equal(admitted, before);
 });
 
 test('Session changing workspace while runner starts cannot obtain a ticket for the old room', async (t) => {
@@ -519,7 +528,7 @@ test('the idle timeout starts at final seat release and expires at the configure
 test('registration rejects invalid configured Web origins', () => {
   for (const invalid of ['https://*.example.test', 'https://owner@ui.example.test',
     'https://ui.example.test/page', 'https://ui.example.test/?q=1', 'https://ui.example.test/#fragment']) {
-    assert.throws(() => registerWeb({}, {}, {}, {}, ['https://ui.example.test', invalid]), /allowedWebOrigins/);
+    assert.throws(() => registerWeb({}, {}, {}, {}, () => ['https://ui.example.test', invalid]), /allowedWebOrigins/);
   }
 });
 
@@ -551,7 +560,7 @@ test('stream announces ownership only after ticket redemption and leaves RFB bin
         return () => server.off('upgrade', upgrade);
       },
     },
-  }, pool, {}, {}, ['https://ui.example.test']);
+  }, pool, {}, {}, () => ['https://ui.example.test']);
   t.after(async () => {
     dispose();
     await pool.dispose();
@@ -611,7 +620,8 @@ test('the agent integration defaults on, but manual browser endpoints do not wai
     const config = Config(options);
     assert.equal(config.agentEnabled.get(), agentEnabled);
     assert.equal(config.idleTimeoutMinutes.get(), 2);
-    assert.deepEqual(Object.keys(Config.dict).filter((key) => Config.dict[key].meta.volatile).sort(), ['agentEnabled', 'idleTimeoutMinutes']);
+    assert.deepEqual(config.allowedWebOrigins.get(), []);
+    assert.deepEqual(Object.keys(Config.dict).filter((key) => Config.dict[key].meta.volatile).sort(), ['agentEnabled', 'allowedWebOrigins', 'idleTimeoutMinutes']);
     let currentValue = agentEnabled;
     let injectionCount = 0;
     let bindingDisposals = 0;

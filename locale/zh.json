@@ -77,7 +77,7 @@
   "providerConflict": "浏览器工具名称冲突。",
   "originHeading": "远程 Web 访问",
   "originLabel": "允许访问的 DSH Web 来源",
-  "originDescription": "每行输入一个受信任的 HTTP(S) 来源，例如 https://dsh.example.com。非默认端口必须写明，不要包含路径或通配符。留空表示仅允许本地访问。保存会重启插件，可能中断正在使用的浏览器会话。如果移除当前使用的来源，你可能无法再从这里访问工作区浏览器。",
+  "originDescription": "每行输入一个受信任的 HTTP(S) 来源，例如 https://dsh.example.com。非默认端口必须写明，不要包含路径或通配符。留空表示仅允许本地访问。保存后无需重启插件。移除当前来源将阻止来自该来源的新请求和新连接，但不会断开已连接的显示流。",
   "originInvalidLine": "来源无效，行号：",
   "originSave": "保存来源列表",
   "idleHeading": "浏览器运行时长",
