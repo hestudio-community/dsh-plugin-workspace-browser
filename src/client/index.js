@@ -1,5 +1,6 @@
 import en from '../../locale/en.json' with { type: 'json' };
 import zh from '../../locale/zh.json' with { type: 'json' };
+import { makeOriginSettings } from './origin-settings.js';
 import { makeIdleSettings } from './idle-settings.js';
 import { makeAgentSettings } from './agent-settings.js';
 import { makeBrowserView } from './browser-view.js';
@@ -102,11 +103,13 @@ export function makeClient({ React, RFB }) {
       const form = configForms.get(PROJECT_ID);
       const AgentSettings = makeAgentSettings(React, form);
       const IdleSettings = makeIdleSettings(React, form);
+      const OriginSettings = makeOriginSettings(React, form);
       const EnvironmentSettings = makeEnvironmentSettings(React);
       settingsCtx.effect(() => configForms.whileServed([PROJECT_ID], () => slots.inject('plugins.bundle.config', () => slots.register({
         name: 'plugins.bundle.config', key: PROJECT_ID, locale: PROJECT_ID,
       }, ({ t, view }) => view === 'page' ? h('div', { className: settings.page },
-        renderSettingsStyles(h), h(AgentSettings, { t }), h(IdleSettings, { t }), h(EnvironmentSettings, { t })) : null))),
+        renderSettingsStyles(h), h(AgentSettings, { t }), h(IdleSettings, { t }), h(EnvironmentSettings, { t }),
+        h(OriginSettings, { t })) : null))),
       `${PROJECT_ID}: plugin settings`);
     });
   }

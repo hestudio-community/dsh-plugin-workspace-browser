@@ -2,7 +2,7 @@
 
 ## Overview
 
-This repository develops a DeepSeek Harness (DSH) plugin that opens a complete Chromium window from the native right sidebar of a workspace Session in local DSH Web and DSH Desktop. A newly created Session works without sending a message. Browser instances and profiles belong to DSH workspaces. Browser Use may operate on the same visible browser only with explicit user authorization.
+This repository develops a DeepSeek Harness (DSH) plugin that opens a complete Chromium window from the native right sidebar of a workspace Session in DSH Web and DSH Desktop. Remote Web access requires an explicitly allowed origin and DSH browser-owner authentication. A newly created Session works without sending a message. Browser instances and profiles belong to DSH workspaces. Browser Use may operate on the same visible browser only with explicit user authorization.
 
 ## Project Structure
 

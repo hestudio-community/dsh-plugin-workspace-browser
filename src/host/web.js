@@ -1,4 +1,5 @@
 import { WebSocketServer } from 'ws';
+import { normalizeWebOrigin } from '../shared/web-origin.js';
 import { PROJECT_ID } from '../shared/identity.js';
 import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER, validId } from '../shared/protocol.js';
 
@@ -31,15 +32,25 @@ function isJsonRequest(req) {
   return typeof type === 'string' && /^application\/json(?:;|$)/i.test(type);
 }
 
-function admit(connection, req, allowDesktopPost = false) {
+function configuredOrigins(entries) {
+  const origins = new Set();
+  for (const entry of entries) {
+    const origin = normalizeWebOrigin(entry);
+    if (!origin) throw new TypeError('allowedWebOrigins entries must be exact HTTP(S) origins, for example https://dsh.example.com.');
+    origins.add(origin);
+  }
+  return origins;
+}
+
+function admit(connection, req, allowedOrigins, allowDesktopPost = false) {
   const expected = localOrigin(req);
   const origin = req.headers.origin;
   // Desktop's owned-Host forwarder removes Origin and Sec-Fetch-Site and attaches its auth cookie.
   // The marker requires a preflight from other web origins; it does not authenticate the caller.
   const desktopPost = allowDesktopPost && origin === undefined && req.headers['sec-fetch-site'] === undefined &&
     req.method === 'POST' && req.headers[DESKTOP_REQUEST_HEADER] === DESKTOP_REQUEST_VERSION && isJsonRequest(req);
-  if (!expected || (origin !== expected && !desktopPost)) {
-    throw new BrowserError('origin_denied', `Open ${PROJECT_ID} from local DSH Web or the main DSH Desktop window.`, 403);
+  if (!(expected && (origin === expected || desktopPost)) && !allowedOrigins.has(origin)) {
+    throw new BrowserError('origin_denied', `Open ${PROJECT_ID} from local DSH Web, a configured DSH Web origin, or the main DSH Desktop window.`, 403);
   }
   const admission = connection.admit({ headers: req.headers });
   if ('rejection' in admission || admission.peer.id !== connection.browserPeer.id || admission.peer.principal.kind !== 'owner') {
@@ -85,7 +96,8 @@ function rejectUpgrade(socket, status) {
   socket.end(`HTTP/1.1 ${status} ${name}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
 }
 
-export function registerWeb(ctx, pool, agent, environment) {
+export function registerWeb(ctx, pool, agent, environment, allowedWebOrigins = []) {
+  const allowedOrigins = configuredOrigins(allowedWebOrigins);
   const wsServer = new WebSocketServer({ noServer: true, maxPayload: WS_LIMIT, perMessageDeflate: false, clientTracking: false });
   const connections = new Set();
   const disposers = [];
@@ -94,7 +106,7 @@ export function registerWeb(ctx, pool, agent, environment) {
   const handle = (path, fields) => async (req, res) => {
     try {
       if (stopped) throw new BrowserError('plugin_unavailable', 'The browser plugin is stopping.', 503);
-      const peer = admit(ctx.connection, req, true);
+      const peer = admit(ctx.connection, req, allowedOrigins, true);
       if (req.method !== 'POST') {
         res.setHeader('Allow', 'POST');
         throw new BrowserError('invalid_method', 'Expected POST.', 405);
@@ -128,7 +140,7 @@ export function registerWeb(ctx, pool, agent, environment) {
   const upgrade = (req, socket, head) => {
     if (stopped || connections.size >= 32) { rejectUpgrade(socket, 503); return; }
     let peer;
-    try { peer = admit(ctx.connection, req); }
+    try { peer = admit(ctx.connection, req, allowedOrigins); }
     catch (error) { rejectUpgrade(socket, error.status || 403); return; }
     wsServer.handleUpgrade(req, socket, head, (ws) => {
       let stream;

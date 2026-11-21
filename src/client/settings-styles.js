@@ -4,7 +4,7 @@ const scope = `${PROJECT_ID}-settings`;
 const spin = `${scope}-spin`;
 export const settings = Object.fromEntries([
   'page', 'section', 'heading', 'card', 'row', 'copy', 'detail', 'actions', 'button', 'buttonPrimary',
-  'input', 'buttonOutline', 'buttonProgress', 'spinner', 'status', 'error', 'list', 'version', 'tag', 'tagPass', 'tagFail', 'tagSkipped',
+  'input', 'textarea', 'buttonOutline', 'buttonProgress', 'spinner', 'status', 'error', 'list', 'version', 'tag', 'tagPass', 'tagFail', 'tagSkipped',
 ].map(name => [name, `${scope}-${name}`]));
 
 // Adapted from the DSH 0.2.2-rc.5 button, settings-card, tag, and spinner styles: the same
@@ -65,6 +65,7 @@ const css = `
   background: var(--dsw-alias-bg-layer-2, Field); color: var(--dsw-alias-label-primary, FieldText);
   font: inherit; font-weight: 400; font-variant-numeric: tabular-nums;
 }
+.${settings.textarea} { width: 100%; height: auto; min-height: 64px; padding-block: 6px; resize: vertical; }
 .${settings.input}:disabled { opacity: .4; }
 .${settings.input}[aria-invalid="true"] { border-color: var(--dsw-alias-state-error-primary, CanvasText); }
 .${settings.input}:focus-visible, .${settings.button}:focus-visible {

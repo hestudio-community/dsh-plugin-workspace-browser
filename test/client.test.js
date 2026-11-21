@@ -225,7 +225,7 @@ function installSettings() {
   function renderSection(index, beforeCommit) {
     const page = contribution.render({ t, view: 'page' });
     assert.equal(page.type, 'div');
-    assert.equal(page.children.length, 4);
+    assert.equal(page.children.length, 5);
     assert.equal(page.children[0].type, 'style');
     const entry = page.children[index + 1];
     Component = entry.type;
@@ -238,6 +238,7 @@ function installSettings() {
     unmount: mounted.dispose,
     writes, form,
     update: (next) => { snapshot = { ...snapshot, ...next }; },
+    renderOrigins: () => renderSection(3),
     renderIdle: () => renderSection(1),
     renderEnvironment: (beforeCommit) => renderSection(2, beforeCommit),
     render() {
@@ -321,6 +322,93 @@ test('idle timeout validates minutes, saves zero, and guards pending and read-on
   settings.update({ writable: false });
   assert.equal(controls().notice, 'agentSettingsReadOnly');
   assert.ok(controls().input.disabled && controls().save.disabled);
+});
+
+function installOriginSettings(t) {
+  const settings = installSettings();
+  t.after(settings.dispose);
+  settings.serve();
+  function controls() {
+    const tree = settings.renderOrigins();
+    return {
+      input: find(tree, node => node.type === 'textarea').props,
+      save: find(tree, node => node.type === 'button').props,
+      notice: find(tree, node => node.props?.role === 'status').children[0],
+    };
+  }
+  return { ...settings, controls, edit: value => controls().input.onChange({ currentTarget: { value } }) };
+}
+
+test('reverse proxy settings default to empty and save only canonical origins at the displayed revision', async (t) => {
+  const { form, controls, edit, update, writes } = installOriginSettings(t);
+  assert.equal(controls().input.value, '');
+  assert.equal(controls().save.disabled, true);
+  const first = 'https://first.example';
+  const second = 'https://second.example:8443';
+  update({ value: { ...form.getSnapshot().value, allowedWebOrigins: [first] }, revision: 7 });
+  assert.equal(controls().input.value, first);
+  edit(`${first}\n \nHTTPS://SECOND.EXAMPLE:8443/\nhttps://FIRST.EXAMPLE:443/`);
+  assert.deepEqual(writes, []);
+  await controls().save.onClick();
+  assert.equal(controls().input.value, `${first}\n${second}`);
+  edit(second);
+  await controls().save.onClick();
+  assert.equal(controls().input.value, second);
+  edit('');
+  await controls().save.onClick();
+  assert.equal(controls().input.value, '');
+  assert.deepEqual(writes, [[first, second], [second], []].map((value, i) => ({
+    ops: [{ op: 'set', path: ['allowedWebOrigins'], value }], revision: 7 + i,
+  })));
+});
+
+test('reverse proxy settings reject an invalid line without partially saving and guard stale and read-only edits', async (t) => {
+  const { controls, edit, update, writes } = installOriginSettings(t);
+  const valid = 'https://web.example';
+  for (const line of ['https://web.example/path', 'https://*.example', 'not an origin']) {
+    edit(`${valid}\n${line}`);
+    const invalid = controls();
+    assert.equal(invalid.input['aria-invalid'], true);
+    assert.ok(invalid.notice);
+    assert.equal(invalid.save.disabled, true);
+    await invalid.save.onClick();
+  }
+  edit(valid);
+  const stale = controls().save;
+  update({ value: { allowedWebOrigins: ['https://new.example'] }, revision: 2 });
+  await stale.onClick();
+  assert.equal(controls().notice, 'agentSettingsChanged');
+  assert.equal(controls().input.value, 'https://new.example');
+  assert.equal(controls().save.disabled, true);
+  edit(valid);
+  const revoked = controls().save;
+  update({ writable: false });
+  await revoked.onClick();
+  assert.equal(controls().notice, 'agentSettingsReadOnly');
+  assert.ok(controls().input.disabled && controls().save.disabled);
+  assert.deepEqual(writes, []);
+});
+
+test('reverse proxy settings prevent duplicate saves and preserve the draft after a failed write', async (t) => {
+  const { form, controls, edit } = installOriginSettings(t);
+  edit('https://web.example');
+  let finish;
+  let attempts = 0;
+  form.mutate = () => { attempts++; return new Promise(resolve => { finish = resolve; }); };
+  const save = controls().save.onClick;
+  const pending = save();
+  await save();
+  assert.equal(attempts, 1);
+  assert.equal(controls().notice, 'agentSettingsSaving');
+  assert.ok(controls().input.disabled && controls().save.disabled);
+  finish(false);
+  await pending;
+  assert.equal(controls().notice, 'agentSettingsNotSaved');
+  assert.equal(controls().input.value, 'https://web.example');
+  assert.equal(controls().save.disabled, false);
+  form.mutate = async () => { throw new Error('Disconnected'); };
+  await controls().save.onClick();
+  assert.equal(controls().notice, 'agentSettingsNotSaved');
 });
 
 test('settings guard unavailable, read-only, stale and pending actions and report failures', async (t) => {

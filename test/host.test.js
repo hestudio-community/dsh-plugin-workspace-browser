@@ -189,7 +189,7 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
       environmentCalls.push('status');
       return { runnerVersion, state: 'idle' };
     },
-  });
+  }, ['https://ui.example.test']);
   t.after(dispose);
 
   assert.equal(DESKTOP_REQUEST_HEADER, 'x-dsh-plugin-workspace-browser-desktop');
@@ -284,6 +284,33 @@ test('Desktop forwarding accepts only loopback marked JSON POSTs from the authen
   }
   assert.deepEqual(environmentCalls, ['check', 'check', 'status', 'status', 'build', 'build']);
   assert.equal(issued, 2);
+
+  const proxy = { remoteAddress: '192.0.2.10' };
+  const proxied = { host: 'backend:4321', origin: 'https://ui.example.test', [DESKTOP_REQUEST_HEADER]: undefined };
+  const upgradeStatus = (headers) => {
+    let response;
+    upgrade({ method: 'GET', socket: proxy, headers }, { end(data) { response = data; } });
+    return Number(response.split(' ')[1]);
+  };
+  for (const headers of [
+    { origin: 'https://other.example.test' }, { origin: 'https://ui.example.test:444' },
+    { origin: undefined, forwarded: 'proto=https;host=ui.example.test',
+      'x-forwarded-host': 'ui.example.test', 'x-forwarded-proto': 'https' },
+  ]) {
+    const before = admitted;
+    const merged = { ...proxied, ...headers, cookie: 'owner' };
+    assert.equal((await request({ ...proxy, headers: merged })).body.code, 'origin_denied');
+    assert.equal(upgradeStatus(merged), 403);
+    assert.equal(admitted, before);
+  }
+  for (const [cookie, status] of [[undefined, 401], ['guest', 403], ['other', 403]]) {
+    const headers = { ...proxied, cookie };
+    const reply = await request({ ...proxy, headers });
+    assert.equal(reply.status, status);
+    assert.equal(reply.body.code, 'access_denied');
+    assert.equal(upgradeStatus(headers), status);
+  }
+  assert.deepEqual((await request({ ...proxy, headers: proxied })).body, expectedView);
 });
 
 test('Session changing workspace while runner starts cannot obtain a ticket for the old room', async (t) => {
@@ -489,6 +516,13 @@ test('the idle timeout starts at final seat release and expires at the configure
   assert.deepEqual(pool.status('one', runId), { state: 'closed' });
 });
 
+test('registration rejects invalid configured Web origins', () => {
+  for (const invalid of ['https://*.example.test', 'https://owner@ui.example.test',
+    'https://ui.example.test/page', 'https://ui.example.test/?q=1', 'https://ui.example.test/#fragment']) {
+    assert.throws(() => registerWeb({}, {}, {}, {}, ['https://ui.example.test', invalid]), /allowedWebOrigins/);
+  }
+});
+
 test('stream announces ownership only after ticket redemption and leaves RFB binary', { timeout: 5_000 }, async (t) => {
   const row = { id: 'w', sessionIds: ['one', 'two'] };
   const streams = [];
@@ -506,9 +540,18 @@ test('stream announces ownership only after ticket redemption and leaves RFB bin
     connection: { browserPeer: owner, admit: () => ({ peer: owner }) },
     webServer: {
       register: () => () => {},
-      registerUpgrade({ handler }) { server.on('upgrade', handler); return () => server.off('upgrade', handler); },
+      registerUpgrade({ handler }) {
+        const upgrade = (req, socket, head) => {
+          if (req.headers.host === 'backend:4321') {
+            Object.defineProperty(socket, 'remoteAddress', { value: '192.0.2.10' });
+          }
+          handler(req, socket, head);
+        };
+        server.on('upgrade', upgrade);
+        return () => server.off('upgrade', upgrade);
+      },
     },
-  }, pool, {});
+  }, pool, {}, {}, ['https://ui.example.test']);
   t.after(async () => {
     dispose();
     await pool.dispose();
@@ -519,7 +562,9 @@ test('stream announces ownership only after ticket redemption and leaves RFB bin
   const address = `127.0.0.1:${server.address().port}`;
   const connect = async (sessionId) => {
     const { ticket } = await pool.issue(sessionId, owner.id);
-    const ws = new WebSocket(`ws://${address}${API}/stream`, { origin: `http://${address}` });
+    const options = sessionId === 'one' ? { origin: `http://${address}` } :
+      { origin: 'https://ui.example.test', headers: { host: 'backend:4321' } };
+    const ws = new WebSocket(`ws://${address}${API}/stream`, options);
     const messages = on(ws, 'message', { signal: t.signal });
     await once(ws, 'open');
     assert.equal(streams.length, sessionId === 'one' ? 0 : 1);
