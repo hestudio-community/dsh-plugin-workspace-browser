@@ -125,6 +125,9 @@ test('view request rejects legacy bodies and unresolved Sessions without startin
   for (const id of [runId, generation]) assert.match(id, /^[0-9a-f-]{36}$/);
   const identity = { sessionId: 'valid', runId };
   const binding = { ...identity, generation };
+  assert.equal((await request(binding, '/clipboard/status')).body.granted, false);
+  assert.equal((await request(binding, '/clipboard/read')).body.code, 'clipboard_access_denied');
+  assert.equal((await request({ sessionId: 'valid' }, '/clipboard/grant')).body.code, 'invalid_body');
   assert.equal((await request(binding)).body.runId, runId);
   assert.equal((await request(identity)).body.code, 'invalid_body');
   assert.equal((await request({ ...binding, generation: 'bad/id' })).body.code, 'invalid_body');

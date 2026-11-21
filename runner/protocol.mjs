@@ -12,6 +12,9 @@ const schemas = new Map([
   ['net-opened', ['id', 'ok']],
   ['net-data', ['id', 'data']],
   ['net-close', ['id']],
+  ['clipboard', ['id', 'request']],
+  ['clipboard-cancel', ['id']],
+  ['clipboard-release', ['id']],
   ['automation', ['id', 'request']],
   ['automation-cancel', ['id']],
 ]);

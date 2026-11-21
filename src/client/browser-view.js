@@ -1,3 +1,4 @@
+import { attachClipboard } from './clipboard.js';
 import { makeUseAgentAccess } from './agent-access.js';
 import { admissionMessage, environmentMessage, post } from './http.js';
 import { createStreamChannel } from './stream.js';
@@ -54,7 +55,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
 
   function publish() {
     if (!disposed) onChange({
-      phase, actionError, generation, busy: !!action,
+      phase, actionError, generation, clipboard: display?.clipboardState, busy: !!action,
       canRestart: !action && (runState === 'ready' || runState === 'failed'),
       canClose: !action && !!generation && !closed,
       canRetry: !action && !closed && (runState === 'failed' || (!display && !viewRequest
@@ -163,6 +164,7 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
     }
     function dispose() {
       clearTimeout(handshake);
+      current.clipboard?.dispose();
       observer?.disconnect();
       try {
         const { rfb } = current;
@@ -191,6 +193,15 @@ export function createBrowserConnection({ sessionId, tabSignal, target, RFB, ope
       if (!live()) return;
       clearTimeout(handshake);
       connected = true;
+      if (screen.ownerDocument?.defaultView) {
+        current.clipboard = attachClipboard({ screen, rfb: current.rfb, identity: { sessionId, runId, generation },
+          change(snapshot) {
+            if (!live()) return;
+            current.clipboardState = { ...snapshot, api: current.clipboard, sessionId, tabSignal };
+            publish();
+          },
+        });
+      }
       updateResize();
       phase = 'connected';
       publish();
@@ -413,7 +424,8 @@ export function makeBrowserView(React, RFB, menu) {
   const InlineEnvironmentCheck = makeInlineEnvironmentCheck(React);
   const GrantAccess = makeGrantAccess(React);
   return function BrowserView({ sessionId, tabSignal, visible, t, openWebSocket, onClosed, onTitle, renderFactorySlot }) {
-    const switchId = useId();
+    const switchId = useId(), clipboardId = useId();
+    const draft = useRef(null);
     const grantScope = useRef(null);
     const target = useRef(null);
     const barRef = useRef(null);
@@ -437,6 +449,7 @@ export function makeBrowserView(React, RFB, menu) {
 
     const connected = visible && state.phase === 'connected';
     const access = useAgentAccess({ sessionId, tabSignal, visible, t });
+    const clip = connected && state.clipboard?.sessionId === sessionId && state.clipboard.tabSignal === tabSignal ? state.clipboard : null;
     const retry = state.canRetry
       ? { id: 'retry', label: t(state.retryLabel), run: () => connection.current?.retry() } : null;
     const menuTarget = menu.useTarget(visible && state.phase !== 'browserClosed', () => [
@@ -445,18 +458,33 @@ export function makeBrowserView(React, RFB, menu) {
       { id: 'close', label: t('closeBrowser'), disabled: !state.canClose, danger: true,
         run: () => void connection.current?.mutate('close') },
       ...(retry ? [retry] : []),
+      ...(clip?.granted ? [{ id: 'clipboard', label: t('clipboardManual'), run: () => void clip.api.manual() }] : []),
     ], sessionId, tabSignal);
-    const errors = [state.actionError && t(state.actionError), access.reason, access.error].filter(Boolean);
+    const errors = [state.actionError && t(state.actionError), access.reason, access.error, clip?.note && t(clip.note)].filter(Boolean);
     return h('div', { hidden: !visible, style: { ...viewport, display: visible ? 'flex' : 'none', flexDirection: 'column' } },
       h('div', { ref: barRef, tabIndex: -1, style: bar },
-        h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, WebkitAppRegion: 'no-drag' } },
+        h('div', { style: { display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, minWidth: 0, WebkitAppRegion: 'no-drag' } },
           h('label', { htmlFor: switchId, style: { overflowWrap: 'anywhere' } }, t('sessionAgentAccess')),
           renderSwitch(h, {
             id: switchId, checked: access.granted,
             disabled: !access.canChange || state.phase === 'browserClosed', busy: access.busy, onChange: access.setGranted,
-          })),
+          }),
+          h('label', { htmlFor: clipboardId }, t('clipboardSwitch')),
+          renderSwitch(h, { id: clipboardId, checked: !!clip?.granted, disabled: !clip?.known || clip.busy,
+            busy: clip?.busy, onChange: next => clip?.api.toggle(next) })),
         h('div', { ref: commandsRef, style: { flexShrink: 0 } },
           renderFactorySlot('contextMenu.button', { target: menuTarget, label: t('browserControls'), size: 'sm' }))),
+      clip?.open ? h('section', { className: settings.card, 'aria-label': t('clipboardManual'),
+        style: { maxHeight: '45%', overflow: 'auto' } }, renderSettingsStyles(h),
+        h('label', null, t('clipboardLocal'), h('textarea', { ref: draft, className: settings.textarea })),
+        h('button', { type: 'button', className: `${settings.button} ${settings.buttonPrimary}`,
+          onClick: () => void clip.api.send(draft.current.value) }, t('clipboardPaste')),
+        clip.remote !== undefined ? h('label', null, t('clipboardRemote'), h('textarea', {
+          className: settings.textarea, readOnly: true, value: clip.remote, dir: 'auto' })) : null,
+        clip.remote !== undefined ? h('button', { type: 'button', className: `${settings.button} ${settings.buttonOutline}`,
+          onClick: () => void clip.api.copy() }, t('clipboardCopy')) : null,
+        h('button', { type: 'button', className: `${settings.button} ${settings.buttonOutline}`,
+          onClick: () => clip.api.close() }, t('clipboardDismiss'))) : null,
       errors.length ? h('div', { style: accessErrors },
         ...errors.map((text, index) => h('div', { key: index, role: 'alert' }, text))) : null,
       h('div', { style: viewport, role: 'region', 'aria-label': t('viewport') },

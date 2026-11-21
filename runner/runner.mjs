@@ -7,6 +7,7 @@ import { stdout } from 'node:process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
 import puppeteer from 'puppeteer-core';
+import { createClipboard } from './clipboard.mjs';
 import { AutomationError, createAutomation } from './automation.mjs';
 import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs, workspaceStartupError } from './identity.mjs';
 import { recoverProfile } from './profile-recovery.mjs';
@@ -27,6 +28,7 @@ let stopping = false;
 let browser;
 let proxy;
 let vncPath;
+let clipboard;
 let automate;
 let stopTitleWatcher;
 let pumping = false;
@@ -48,6 +50,7 @@ function stop(reason) {
   }
   ready = false;
   stopTitleWatcher?.();
+  clipboard?.close();
   for (const { controller } of jobs.values()) controller.abort();
   for (const socket of sessions.values()) socket.destroy();
   proxy?.close();
@@ -156,6 +159,9 @@ function dispatch(frame) {
   if (!ready) return;
   const { id } = frame;
   switch (frame.type) {
+    case 'clipboard': void clipboard.run(id, frame.request); break;
+    case 'clipboard-cancel': clipboard.cancel(id); break;
+    case 'clipboard-release': clipboard.release(id); break;
     case 'rfb-open': openRfb(id); break;
     case 'rfb': {
       const socket = sessions.get(id);
@@ -286,6 +292,7 @@ async function setup() {
     process.setgid(deskGid);
     process.setuid(deskUid);
     if (process.getuid() !== deskUid || deskUid === browserUid || deskUid === 0) throw new Error();
+    clipboard = createClipboard(deskEnv, send);
     automate = createAutomation(browser);
     ready = true;
     send({ type: 'ready' });

@@ -245,8 +245,10 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
       case 'net-close':
         closeTunnel(id, false);
         return true;
+      case 'clipboard-result':
       case 'automation-result': {
         const task = pending.get(id);
+        if (task && message.type !== `${task.type}-result`) return false;
         if (message.ok === true) task?.finish(null, message.value);
         else task?.finish(new BrowserError('browser_action_failed', 'Chromium could not complete the operation; the page may have changed.', 409));
         return true;
@@ -371,13 +373,15 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
         close: () => { if (views.delete(id)) send({ type: 'rfb-close', id }); },
       };
     },
-    automation(request, signal) {
+    releaseClipboard(id) { send({ type: 'clipboard-release', id }); },
+    clipboard(request, signal) { return this.automation(request, signal, 'clipboard'); },
+    automation(request, signal, type = 'automation') {
       return new Promise((resolve, reject) => {
         if (stopped || signal?.aborted) { reject(runnerUnavailable()); return; }
         const id = randomUUID();
         const abortTask = (error) => {
           finish(error);
-          send({ type: 'automation-cancel', id });
+          send({ type: `${type}-cancel`, id });
         };
         const cancel = () => abortTask(new BrowserError('action_cancelled', 'The browser operation was cancelled.', 409));
         const timer = setTimeout(() => abortTask(new BrowserError('action_timeout', 'The browser operation timed out.', 504)), COMMAND_MS);
@@ -388,9 +392,9 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
           signal?.removeEventListener('abort', cancel);
           if (error) reject(error); else resolve(value);
         }
-        pending.set(id, { finish });
+        pending.set(id, { type, finish });
         signal?.addEventListener('abort', cancel, { once: true });
-        if (!send({ type: 'automation', id, request })) finish(runnerUnavailable());
+        if (!send({ type, id, request })) finish(runnerUnavailable());
       });
     },
   };

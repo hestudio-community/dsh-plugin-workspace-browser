@@ -1308,6 +1308,36 @@ test('the toolbar Switch follows the confirmed Session grant independently of br
   ]);
 });
 
+test('the connected clipboard switch grants only its display binding and retires with the tab', async t => {
+  const requests = [];
+  t.mock.method(globalThis, 'fetch', async (url, { body }) => {
+    const path = url.slice(API.length);
+    const data = JSON.parse(body);
+    requests.push([path, data]);
+    if (path === '/agent/status') return response(agentStatus());
+    if (path === '/view') return response(ticket('g1'));
+    return response({ granted: path === '/clipboard/grant' || requests.some(([p]) => p === '/clipboard/grant') });
+  });
+  const display = fakeDisplays(t), tab = new AbortController();
+  const view = mountView('one', tab.signal, display); t.after(view.dispose);
+  await flush();
+  const screen = display.rfbs[0].screen, doc = new EventTarget(), events = new EventTarget();
+  Object.assign(doc, { defaultView: new EventTarget(), visibilityState: 'visible', hasFocus: () => true });
+  Object.assign(screen, { ownerDocument: doc, contains: () => false, addEventListener: events.addEventListener.bind(events) });
+  display.rfbs[0].dispatchEvent(new Event('connect')); await flush();
+  const clipboard = () => {
+    const tree = view.render();
+    const label = find(tree, node => node.type === 'label' && node.children.includes('clipboardSwitch'));
+    return find(tree, node => node.type === 'input' && node.props.id === label.props.htmlFor).props;
+  };
+  assert.equal(clipboard().checked, false); await toggleSwitch(clipboard()); await flush();
+  assert.equal(clipboard().checked, true); assert.equal(view.access().checked, false);
+  assert.deepEqual(requests.find(([p]) => p === '/clipboard/grant'), ['/clipboard/grant', { sessionId: 'one', runId: 'run', generation: 'g1' }]);
+  assert.ok(view.actions().some(({ id }) => id === 'clipboard'));
+  const stale = clipboard(); tab.abort(); await toggleSwitch(stale);
+  assert.equal(requests.some(([p]) => p === '/clipboard/revoke' || p === '/clipboard/read'), false);
+});
+
 test('agent access reports Host errors and preserves the confirmed state', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const data = agentStatus();

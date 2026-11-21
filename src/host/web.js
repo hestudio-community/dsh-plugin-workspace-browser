@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import { normalizeWebOrigin } from '../shared/web-origin.js';
 import { PROJECT_ID } from '../shared/identity.js';
-import { API, BrowserError, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER, validId } from '../shared/protocol.js';
+import { API, BrowserError, MAX_CLIPBOARD_BYTES, DESKTOP_REQUEST_HEADER, DESKTOP_REQUEST_VERSION, RESIZE_OWNER, validId } from '../shared/protocol.js';
 
 const WS_LIMIT = 1024 * 1024;
 const BODY_LIMIT = 4096;
@@ -12,6 +12,8 @@ const methods = {
   '/view': [sessionFields, controlFields],
   '/browser/status': [['sessionId', 'runId']], '/browser/restart': [controlFields], '/browser/close': [controlFields],
   '/workspace-access/prepare': [sessionFields], '/workspace-access/grant': [['sessionId', 'token']],
+  '/clipboard/status': [controlFields], '/clipboard/grant': [controlFields], '/clipboard/revoke': [controlFields],
+  '/clipboard/read': [controlFields], '/clipboard/write': [[...controlFields, 'text']],
   '/agent/status': [sessionFields], '/agent/grant': [sessionFields], '/agent/revoke': [sessionFields],
   '/environment/check': [[]], '/environment/build': [[]], '/environment/build/status': [[]],
   // Capability probe for the settings page. It reads no configuration and runs no Docker command.
@@ -70,20 +72,20 @@ function respond(res, status, data) {
   res.end(JSON.stringify(data));
 }
 
-async function body(req, shapes) {
+async function body(req, shapes, limit) {
   if (!isJsonRequest(req)) {
     throw new BrowserError('invalid_content_type', 'Expected a JSON request.', 415);
   }
-  if (Number(req.headers['content-length']) > BODY_LIMIT) throw new BrowserError('invalid_body', 'Request body is too large.', 413);
+  if (Number(req.headers['content-length']) > limit) throw new BrowserError('invalid_body', 'Request body is too large.', 413);
   const buffers = [];
   let size = 0;
   for await (const chunk of req.iterator({ destroyOnReturn: false })) {
     size += chunk.length;
-    if (size > BODY_LIMIT) throw new BrowserError('invalid_body', 'Request body is too large.', 413);
+    if (size > limit) throw new BrowserError('invalid_body', 'Request body is too large.', 413);
     buffers.push(chunk);
   }
   let value;
-  try { value = JSON.parse(Buffer.concat(buffers).toString('utf8')); }
+  try { value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(Buffer.concat(buffers))); }
   catch { throw new BrowserError('invalid_body', 'Invalid JSON request.'); }
   if (!value || typeof value !== 'object' || Array.isArray(value) || !shapes.some((keys) =>
       Object.keys(value).length === keys.length && keys.every((key) => Object.hasOwn(value, key) &&
@@ -114,7 +116,7 @@ export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins 
         res.setHeader('Allow', 'POST');
         throw new BrowserError('invalid_method', 'Expected POST.', 405);
       }
-      const value = await body(req, fields);
+      const value = await body(req, fields, path === '/clipboard/write' ? BODY_LIMIT + 6 * MAX_CLIPBOARD_BYTES : BODY_LIMIT);
       if (stopped || res.destroyed || peer.signal.aborted) return;
       const { sessionId, runId, generation } = value;
       let result = {};
@@ -123,6 +125,8 @@ export function registerWeb(ctx, pool, agent, environment, getAllowedWebOrigins 
         case '/browser/status': result = pool.status(sessionId, runId); break;
         case '/browser/restart': result = pool.restart(sessionId, runId, generation, peer.id); break;
         case '/browser/close': result = pool.close(sessionId, runId, generation); break;
+        case '/clipboard/status': case '/clipboard/grant': case '/clipboard/revoke': case '/clipboard/read': case '/clipboard/write':
+          result = await pool.clipboard(path.slice('/clipboard/'.length), value, peer.signal); break;
         case '/agent/status': result = agent.status(sessionId); break;
         case '/agent/grant': result = agent.grant(sessionId); break;
         case '/agent/revoke': result = agent.revoke(sessionId); break;

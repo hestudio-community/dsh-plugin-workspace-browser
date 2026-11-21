@@ -24,6 +24,12 @@ cookies.
 - An idle timeout that retires the browser after its last view disconnects.
 - Optional agent access, off by default in each Session. The agent tool can
   list tabs, navigate, inspect, click, fill, and scroll.
+- Optional two-way plain-text clipboard between your device and the workspace
+  browser. Enable it separately for each Session; agent access is not required.
+  Paste into the focused display using your usual paste shortcut. To copy back
+  automatically, your browser must allow clipboard writes for the DSH origin.
+  If it does not, use **Chromium controls → Transfer clipboard text**. Only plain
+  text up to 16 KiB per transfer is supported; images and files are not synced.
 - Optional remote Web access through an exact allow-list of trusted origins.
 
 ## Requirements
@@ -34,7 +40,7 @@ cookies.
 - A registered DSH workspace. Use a dedicated workspace if the browser should
   not see other project files.
 - The DSH Host must be able to reach the sites you open. Host file transfer,
-  host clipboard integration, and audio forwarding are out of scope.
+  access to the Docker host's system clipboard, and audio forwarding are out of scope.
 
 ## Website access
 

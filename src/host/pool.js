@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { BrowserError, validId } from '../shared/protocol.js';
+import { BrowserError, validClipboardText, validId } from '../shared/protocol.js';
 
 const TICKET_MS = 15_000;
 export const DEFAULT_IDLE_TIMEOUT_MINUTES = 2;
@@ -44,6 +44,14 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
     grant.abort();
   }
 
+  function revokeClipboard(room, sessionId) {
+    const grant = room.clipboard.get(sessionId);
+    if (!grant) return;
+    room.clipboard.delete(sessionId);
+    grant.controller.abort();
+    grant.runner.releaseClipboard(grant.id);
+  }
+
   function syncSeats(room) {
     for (const seat of room.seats) {
       if (!seat.isCurrent()) {
@@ -64,6 +72,7 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
   function detach(room) {
     for (const [key, ticket] of tickets) if (ticket.room === room) tickets.delete(key);
     invalidate(room);
+    for (const id of room.clipboard.keys()) revokeClipboard(room, id);
     room.busy = null;
     const seats = [...room.seats];
     room.seats.clear();
@@ -147,7 +156,7 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       if (rooms.size + stopping.size >= MAX_INSTANCES || [...stopping].some((entry) => entry.id === id)) {
         throw new BrowserError('runner_limit', 'The runner is stopping or the browser instance limit has been reached. Retry shortly.', 503);
       }
-      room = { id, runId: randomUUID(), seats: new Set(), permissions: new Map(), busy: null };
+      room = { id, runId: randomUUID(), seats: new Set(), permissions: new Map(), clipboard: new Map(), busy: null };
       rooms.set(id, room);
       start(room);
     }
@@ -178,6 +187,9 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       if ((room.state === 'ready' || room.state === 'failed') && !room.seats.size && idleMs > 0 && now - room.lastUsed >= idleMs) {
         retire(room);
         continue;
+      }
+      for (const sessionId of room.clipboard.keys()) {
+        if (findSession(sessionId)?.id !== room.id) revokeClipboard(room, sessionId);
       }
       for (const sessionId of room.permissions.keys()) {
         if (findSession(sessionId)?.id !== room.id) invalidate(room, sessionId);
@@ -221,6 +233,31 @@ export function createPool(registry, startRunner, getIdleTimeoutMinutes = () => 
       const key = randomBytes(32).toString('base64url');
       tickets.set(key, { room, attempt, sessionId, peerId, expiresAt: Date.now() + TICKET_MS });
       return { ticket: key, runId: room.runId, generation: attempt.generation };
+    },
+    async clipboard(action, { sessionId, runId, generation, text }, peerSignal) {
+      const room = boundRoom(findSession(sessionId)?.id, runId, generation);
+      if (room.state !== 'ready') throw generationChanged();
+      const grant = room.clipboard.get(sessionId);
+      if (action === 'status') return { granted: !!grant };
+      if (action === 'grant') {
+        if (!grant) room.clipboard.set(sessionId, { controller: new AbortController(), id: randomUUID(), runner: room.attempt.runner });
+        return { granted: true };
+      }
+      if (action === 'revoke') { revokeClipboard(room, sessionId); return { granted: false }; }
+      const denied = () => new BrowserError('clipboard_access_denied', 'Clipboard access is off for this Session.', 403);
+      if (!grant) throw denied();
+      if (!['read', 'write'].includes(action) || (action === 'write' && !validClipboardText(text))) {
+        throw new BrowserError('invalid_clipboard_text', 'Expected bounded Unicode text.');
+      }
+      if (grant.busy) throw new BrowserError('clipboard_busy', 'Clipboard operation in progress.', 409);
+      const signal = peerSignal ? AbortSignal.any([grant.controller.signal, peerSignal]) : grant.controller.signal;
+      grant.busy = true;
+      try {
+        const value = await grant.runner.clipboard({ action, grantId: grant.id, ...(action === 'write' ? { text } : {}) }, signal);
+        if (signal.aborted || room.clipboard.get(sessionId) !== grant || findSession(sessionId)?.id !== room.id) throw denied();
+        if (action === 'read' && value !== null && !validClipboardText(value)) throw new BrowserError('invalid_clipboard_text', 'Invalid clipboard response.');
+        return action === 'read' ? { text: value } : {};
+      } finally { grant.busy = false; }
     },
     status(sessionId, runId) {
       const room = rooms.get(findSession(sessionId)?.id);
