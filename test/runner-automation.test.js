@@ -137,10 +137,10 @@ test('Runner lists different origins and operates on a background webpage withou
   assert.equal(foreground.realmAccesses, 0);
 });
 
-test('Runner permits cross-origin links and form destinations with new-window targets', async () => {
+test('Runner permits cross-origin links and form destinations on custom ports with new-window targets', async () => {
   const tab = fixture('https://example.com/');
-  const anchor = tab.anchor({ href: 'https://example.org/path', target: '_blank', 'aria-label': 'Link' });
-  const submit = tab.button({ formaction: 'http://example.net:80/search', formtarget: 'results', 'aria-label': 'Submit' },
+  const anchor = tab.anchor({ href: 'https://[::1]:8443/path', target: '_blank', 'aria-label': 'Link' });
+  const submit = tab.button({ formaction: 'http://192.168.31.1:8080/search', formtarget: 'results', 'aria-label': 'Submit' },
     { action: 'https://example.com/', target: '_self' });
   const run = automation([tab]);
   const { tabs: [{ tabId, url }] } = await run('list');
@@ -157,7 +157,7 @@ test('Runner rejects declarative download links and unsafe navigation destinatio
   const anchors = [
     { href: 'https://example.org/report', download: '' },
     { href: 'javascript:void(0)' },
-    { href: 'https://example.org:8443/' },
+    { href: 'file:///local' },
     { href: 'https://user@example.org/' },
   ].map(attrs => tab.anchor(attrs));
   const run = automation([tab]);
@@ -201,7 +201,7 @@ test('Runner retains stale document, stale element, hit-test and viewport checks
 test('Runner lists start pages but never opens their isolated realms; navigate uses bounded goto and follows redirects', async () => {
   const starts = ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/'];
   const fixtures = [...starts, 'chrome://settings/', 'chrome-untrusted://new-tab-page/', 'file:///local',
-    'https://example.org:8443/', 'https://secret@example.org/'].map(fixture);
+    'https://example.org:65536/', 'https://secret@example.org/'].map(fixture);
   const run = automation(fixtures);
   const { tabs } = await run('list');
   assert.deepEqual(tabs.map(({ url }) => url), starts);
@@ -226,7 +226,7 @@ test('Runner lists start pages but never opens their isolated realms; navigate u
   assert.equal(fixtures[0].realmAccesses, realmAccesses);
 });
 
-test('Runner wire validation requires flat requests and HTTP(S) destinations without credentials or custom ports', async () => {
+test('Runner wire validation requires flat requests and HTTP(S) destinations without credentials', async () => {
   const tab = fixture('https://example.com/');
   const run = automation([tab]);
   const { tabs: [{ tabId }] } = await run('list');
@@ -234,11 +234,25 @@ test('Runner wire validation requires flat requests and HTTP(S) destinations wit
   await assert.rejects(run('list', { origin: tab.page.url() }), /Invalid automation request/);
   await assert.rejects(run('navigate', { tabId, url, documentId: tabId }), /Invalid automation request/);
   for (const bad of ['about:blank', 'chrome://newtab/', 'chrome://new-tab-page/', 'file:///local', 'data:text/plain,test',
-    'https://example.org:80/', 'https://user:pass@example.org/', 'https://example.org/a b']) {
+    'https://example.org:65536/', 'https://user:pass@example.org/', 'https://example.org/a b']) {
     await assert.rejects(run('navigate', { tabId, url: bad }), /Invalid automation request/);
   }
   assert.equal(tab.navigations.length, 0);
   assert.deepEqual(await run('navigate', { tabId, url }), { tabId, url: 'https://example.org/' });
+});
+
+test('Runner navigates to, lists, and inspects local HTTP(S) pages on custom ports', async () => {
+  const tab = fixture('about:blank');
+  const run = automation([tab]);
+  const { tabs: [{ tabId }] } = await run('list');
+  for (const url of ['http://192.168.31.1:8080/', 'http://localhost:3000/', 'https://[::1]:8443/']) {
+    assert.deepEqual(await run('navigate', { tabId, url }), { tabId, url });
+    assert.deepEqual(await run('list'), { tabs: [{ tabId, url }] });
+    const snapshot = await run('inspect', { tabId });
+    assert.equal(snapshot.url, url);
+    assert.equal(snapshot.tabId, tabId);
+    assert.ok(snapshot.documentId);
+  }
 });
 
 test('Runner can target an observed tab after it falls outside either list output cap', async () => {

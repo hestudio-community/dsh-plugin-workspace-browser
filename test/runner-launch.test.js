@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { EventEmitter } from 'node:events';
+import { EventEmitter, once } from 'node:events';
+import { createServer as createHttpServer, request } from 'node:http';
+import { connect, createServer as createTcpServer } from 'node:net';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
+import { createProxy } from '../runner/proxy.mjs';
 import { resolveRootAccount } from '../src/host/root-account.js';
 import { browserIdentity, workspaceMount } from '../src/host/workspace.js';
 import { dockerCommand, createRunnerLauncher } from '../src/host/runner.js';
@@ -62,7 +65,7 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
       child.emit('close', code);
     }
     child.kill = () => close(1);
-    launches.push({ name, volume, owner, args, stdout: child.stdout });
+    launches.push({ name, volume, owner, args, stdin: child.stdin, stdout: child.stdout });
     if (containers.has(name)) {
       queueMicrotask(() => close(125));
     } else {
@@ -86,6 +89,113 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
 }
 
 const start = (launcher, workspace) => launcher.start(workspace, () => {}, process.cwd());
+
+async function listenLocally(t, server, hostname = '127.0.0.1') {
+  await once(server.listen(0, hostname), 'listening');
+  t.after(() => { if (server.listening) server.close(); });
+  return server.address().port;
+}
+
+async function localProxy(t) {
+  const engine = fakeEngine();
+  const runner = start(engine.launcher(), 'proxy-test');
+  t.after(() => runner.stop());
+  await runner.ready;
+  const [{ stdin, stdout }] = engine.launches;
+  const send = frame => stdout.write(`${JSON.stringify(frame)}\n`);
+  const proxy = await createProxy(send, (type, id, data) => send({ type, id, data: data.toString('base64') }));
+  t.after(() => proxy.close());
+  // PassThrough delivers each complete Host write in this simulated Docker pipe.
+  stdin.on('data', line => {
+    const frame = JSON.parse(line.toString());
+    if (frame.type === 'net-data') frame.data = Buffer.from(frame.data, 'base64');
+    proxy.handle(frame);
+  });
+  return { ...proxy, send, stdin };
+}
+
+async function proxiedHttp(address, target) {
+  const { hostname, port } = new URL(address);
+  return new Promise((resolve, reject) => {
+    const req = request({ hostname, port, path: target, headers: { Host: 'ignored.example' } }, res => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { body += chunk; });
+      res.once('error', reject);
+      res.once('end', () => resolve({ status: res.statusCode, body }));
+    });
+    req.once('error', reject);
+    req.setTimeout(2000, () => req.destroy(new Error('Local HTTP integration timed out')));
+    req.end();
+  });
+}
+
+function proxiedConnect(t, address, target, head = '') {
+  const { hostname, port } = new URL(address);
+  const client = connect({ host: hostname, port: Number(port) });
+  t.after(() => client.destroy());
+  client.setEncoding('utf8');
+  client.setTimeout(2000, () => client.destroy(new Error('Local CONNECT integration timed out')));
+  client.write(`CONNECT ${target} HTTP/1.1\r\nHost: ignored.example\r\n\r\n${head}`);
+  return client;
+}
+
+async function readTunnel(client) {
+  let data = '';
+  for await (const chunk of client) data += chunk;
+  return data;
+}
+
+test('Runner proxy uses the Host TCP broker for local HTTP and CONNECT on custom ports', { timeout: 8000 }, async t => {
+  const http = createHttpServer((req, res) => res.end(`${req.headers.host} ${req.url}`));
+  const httpPort = await listenLocally(t, http);
+  const tcp = createTcpServer(socket => socket.once('data', chunk => socket.end(`reply: ${chunk}`)));
+  const tcpPort = await listenLocally(t, tcp);
+  const proxy = await localProxy(t);
+
+  assert.deepEqual(await proxiedHttp(proxy.address, `http://localhost:${httpPort}/health?q=1`),
+    { status: 200, body: `localhost:${httpPort} /health?q=1` });
+  assert.equal(await readTunnel(proxiedConnect(t, proxy.address, `127.0.0.1:${tcpPort}`, 'opaque request')),
+    'HTTP/1.1 200 Connection Established\r\n\r\nreply: opaque request');
+
+  // A client disconnect must also close the Host's upstream connection.
+  const accepted = once(tcp, 'connection');
+  const abandoned = proxiedConnect(t, proxy.address, `127.0.0.1:${tcpPort}`);
+  const handshakeData = once(abandoned, 'data');
+  const [upstream] = await accepted;
+  const upstreamClosed = once(upstream, 'close');
+  const [handshake] = await handshakeData;
+  assert.match(handshake, /^HTTP\/1\.1 200 /);
+  abandoned.destroy();
+  await upstreamClosed;
+
+  const closed = once(tcp, 'close');
+  tcp.close();
+  await closed;
+  assert.equal(await readTunnel(proxiedConnect(t, proxy.address, `127.0.0.1:${tcpPort}`)),
+    'HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+  assert.equal((await proxiedHttp(proxy.address, `http://127.0.0.1:${tcpPort}/`)).status, 502);
+  assert.equal((await proxiedHttp(proxy.address, `http://127.0.0.1:${httpPort}/`)).status, 200);
+
+  for (const [host, port] of [['localhost', 0], ['localhost', '80'], ['http://localhost', httpPort]]) {
+    const response = once(proxy.stdin, 'data');
+    proxy.send({ type: 'net-open', id: 'invalid-destination', host, port });
+    const [line] = await response;
+    assert.deepEqual(JSON.parse(line.toString()), { type: 'net-opened', id: 'invalid-destination', ok: false });
+  }
+});
+
+test('Host broker connects to bracketed IPv6 URL destinations where local IPv6 is available', { timeout: 8000 }, async t => {
+  const http = createHttpServer((req, res) => res.end(req.headers.host));
+  let port;
+  try { port = await listenLocally(t, http, '::1'); }
+  catch (error) {
+    if (!['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes(error.code)) throw error;
+    return t.skip('IPv6 loopback is unavailable');
+  }
+  const proxy = await localProxy(t);
+  assert.deepEqual(await proxiedHttp(proxy.address, `http://[::1]:${port}/`), { status: 200, body: `[::1]:${port}` });
+});
 
 test('window title frames update only the owning runner and stop exposing retired titles', async () => {
   const engine = fakeEngine();

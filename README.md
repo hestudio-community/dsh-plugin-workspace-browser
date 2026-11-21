@@ -33,9 +33,22 @@ cookies.
   without user namespace remapping.
 - A registered DSH workspace. Use a dedicated workspace if the browser should
   not see other project files.
-- Public IPv4 HTTP(S) sites on default ports. Private or development sites,
-  IPv6-only sites, host file transfer, host clipboard integration, and audio
-  forwarding are out of scope.
+- The DSH Host must be able to reach the sites you open. Host file transfer,
+  host clipboard integration, and audio forwarding are out of scope.
+
+## Website access
+
+Chromium can open HTTP(S) sites reachable from the DSH Host, including LAN and
+IPv6 sites, `localhost`, and sites on non-default ports. For example, enter
+`http://192.168.31.1` to open a device at that LAN address. `localhost` means the
+machine running DSH, not a remote viewer's computer. Chromium security rules,
+TLS validation, and the Host's DNS, routing, and firewall still apply.
+
+Websites and authorized agents can make requests to HTTP(S) services on the Host
+and its private network. Open only trusted sites when working with sensitive
+internal services, and grant agents access only in Sessions you trust. The
+**Remote Web access** setting controls where DSH can be opened, not what the
+workspace Chromium can reach.
 
 ## Install
 

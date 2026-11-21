@@ -13,23 +13,39 @@ const HOP_HEADERS = [
   'te', 'trailer', 'transfer-encoding', 'upgrade', 'expect',
 ];
 
+const authorityHost = '(?:\\[[0-9a-f:.]+\\]|[^:/?#@\\[\\]]+)';
+const httpAuthority = new RegExp(`^http://${authorityHost}(?::([0-9]{1,5}))?(?=[/?]|$)`, 'i');
+const connectAuthority = new RegExp(`^${authorityHost}:([0-9]{1,5})$`, 'i');
+const invalidTarget = /[\\#\x00-\x20\x7f]/;
+
+function hostname(url) {
+  return url.hostname.startsWith('[') ? url.hostname.slice(1, -1) : url.hostname;
+}
+
 // The absolute URL, never a request header, selects a plain HTTP destination.
 export function httpTarget(target) {
-  if (typeof target !== 'string' || !/^http:\/\/[^/?#]+/i.test(target) || /^http:\/\/[^/?#]*@/i.test(target) || /[\\#\x00-\x20\x7f]/.test(target)) return null;
+  if (typeof target !== 'string' || invalidTarget.test(target)) return null;
+  const authority = httpAuthority.exec(target);
+  if (!authority) return null;
+  const port = Number(authority[1] ?? 80);
+  if (port < 1 || port > 65535) return null;
   try {
     const url = new URL(target);
-    if (!url.hostname || url.port || url.username || url.password) return null;
-    return { host: url.hostname.replace(/^\[|\]$/g, ''), authority: url.host, path: url.pathname + url.search, port: 80 };
+    return { host: hostname(url), authority: url.host, path: url.pathname + url.search, port };
   } catch {
     return null;
   }
 }
 
 export function connectTarget(target) {
-  if (typeof target !== 'string' || !/^(?:\[[0-9a-f:.]+\]|[a-z0-9_.-]+):443$/i.test(target)) return null;
+  if (typeof target !== 'string' || invalidTarget.test(target)) return null;
+  const authority = connectAuthority.exec(target);
+  if (!authority) return null;
+  const port = Number(authority[1]);
+  if (port < 1 || port > 65535) return null;
   try {
     const url = new URL(`https://${target}`);
-    return { host: url.hostname.replace(/^\[|\]$/g, ''), port: 443 };
+    return { host: hostname(url), port };
   } catch {
     return null;
   }
@@ -188,6 +204,8 @@ export async function createProxy(frameToHost = send, chunkToHost = sendChunk) {
   server.on('connect', (incoming, socket, head) => {
     socket.pause();
     socket.on('error', () => {});
+    // Upgraded HTTP sockets can stay half-open after a client disconnects.
+    socket.once('end', () => socket.destroy());
     const target = connectTarget(incoming.url);
     if (!target) {
       socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');

@@ -5,7 +5,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROJECT_ID } from '../shared/identity.js';
 import { BrowserError, MAX_CHUNK, MAX_FRAME, validId } from '../shared/protocol.js';
-import { resolvePublicIPv4 } from './egress.js';
+import { isTcpDestination } from './egress.js';
 import { IMAGE_PLATFORM } from '../shared/runner-image.js';
 import { createRunnerEnvironment, environmentError } from './image.js';
 
@@ -171,18 +171,17 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
     if (notify) send({ type: room.connected ? 'net-close' : 'net-opened', id, ...(room.connected ? {} : { ok: false }) });
   }
 
-  async function openTunnel({ id, host, port }) {
+  function openTunnel({ id, host, port }) {
     if (tunnels.has(id)) { void stop(); return; }
-    if ((port !== 80 && port !== 443) || tunnels.size >= MAX_TUNNELS) {
+    if (!isTcpDestination(host, port) || tunnels.size >= MAX_TUNNELS) {
       send({ type: 'net-opened', id, ok: false });
       return;
     }
     const room = { socket: null, connected: false };
     tunnels.set(id, room);
     try {
-      const address = await resolvePublicIPv4(host);
-      if (stopped || tunnels.get(id) !== room) return;
-      const socket = room.socket = connect({ host: address, port, family: 4 });
+      // The TCP socket uses Host DNS and routing, including hosts-file entries and IPv6.
+      const socket = room.socket = connect({ host, port });
       socket.setTimeout(30_000, () => closeTunnel(id, true));
       socket.once('connect', () => {
         if (tunnels.get(id) !== room) return;
@@ -232,7 +231,7 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
         return true;
       }
       case 'net-open':
-        void openTunnel(message);
+        openTunnel(message);
         return true;
       case 'net-data': {
         const bytes = decodeChunk(message.data);

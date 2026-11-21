@@ -4,7 +4,7 @@ import { createServer } from 'node:http';
 import test from 'node:test';
 import { WebSocket } from 'ws';
 import { createAgent, parseAction } from '../src/host/agent.js';
-import { isPublicIPv4, resolvePublicIPv4 } from '../src/host/egress.js';
+import { isTcpDestination } from '../src/host/egress.js';
 import { apply, Config, inject } from '../src/host/index.js';
 import { createPool } from '../src/host/pool.js';
 import { registerWeb } from '../src/host/web.js';
@@ -13,16 +13,17 @@ import { RUNNER_VERSION } from '../src/shared/runner-image.js';
 
 const origin = 'https://example.com';
 
-test('DNS answers are pinned only if every A record belongs to public IPv4 space', async () => {
-  for (const address of ['127.0.0.1', '10.1.2.3', '169.254.169.254', '100.64.0.1', '192.168.0.1', '192.0.2.1', '198.18.0.1', '224.0.0.1', '::1', '::ffff:127.0.0.1']) {
-    assert.equal(isPublicIPv4(address), false, address);
+test('Host admits TCP destinations by shape, not address class or default port', () => {
+  for (const host of ['localhost', 'workstation', 'printer.local', 'example.com.', '8.8.8.8', '127.0.0.1', '192.168.31.1', '::1', 'fd00::1', '::ffff:127.0.0.1']) {
+    for (const port of [1, 80, 443, 8080, 65535]) assert.ok(isTcpDestination(host, port), `${host}:${port}`);
   }
-  assert.equal(await resolvePublicIPv4('example.com', { resolve4: async (name) => {
-    assert.equal(name, 'example.com.');
-    return ['93.184.215.14'];
-  } }), '93.184.215.14');
-  await assert.rejects(resolvePublicIPv4('example.com', { resolve4: async () => ['93.184.215.14', '127.0.0.1'] }));
-  await assert.rejects(resolvePublicIPv4('2130706433', { resolve4: async () => assert.fail('Numeric aliases must not reach DNS') }));
+  for (const host of [undefined, '', ' localhost', 'localhost\n', 'localhost\0', 'http://localhost', 'localhost/a',
+    'localhost:8080', '[::1]', 'fe80::1%eth0', 'user@localhost', 'a..b', 'a'.repeat(64)]) {
+    assert.equal(isTcpDestination(host, 8080), false, String(host));
+  }
+  for (const port of [undefined, '8080', 0, -1, 1.5, 65536]) {
+    assert.equal(isTcpDestination('localhost', port), false, String(port));
+  }
 });
 
 test('runner is shared only within a workspace; tickets are peer-bound and single-use', async (t) => {
@@ -622,10 +623,10 @@ test('stream announces ownership only after ticket redemption and leaves RFB bin
 });
 
 test('navigation needs only a tab and an HTTP(S) URL, without an origin grant or document reference', () => {
-  for (const url of ['https://example.com/about', 'https://example.org/']) {
+  for (const url of ['https://example.com/about', 'https://example.org/', 'http://192.168.31.1:8080/', 'http://localhost:3000/', 'https://[::1]:8443/']) {
     assert.deepEqual(parseAction({ tabId: 'tab', action: 'navigate', url }), { method: 'navigate', tabId: 'tab', url });
   }
-  for (const url of ['chrome://settings/', 'file:///profile', 'https://example.org:9000/', 'https://user@example.org/']) {
+  for (const url of ['chrome://settings/', 'file:///profile', 'https://example.org:65536/', 'https://user@example.org/']) {
     assert.throws(() => parseAction({ tabId: 'tab', action: 'navigate', url }), { code: 'invalid_action' });
   }
   assert.throws(() => parseAction({ action: 'list', workspaceId: 'elsewhere' }), { code: 'invalid_action' });
@@ -754,10 +755,15 @@ test('Session grants work before the display connects and last until revoked or 
   assert.equal(agent.status('s').access.sessionId, 's');
   assert.equal(agent.status('other').access, null);
   await assert.rejects(run('other'), { code: 'agent_access_denied' });
-  for (const url of ['https://example.com/', 'https://example.org/']) {
+  const privateNavigation = { action: 'navigate', tabId: 'tab', url: 'http://192.168.31.1:8080/' };
+  await assert.rejects(run('other', privateNavigation), { code: 'agent_access_denied' });
+  assert.deepEqual(requests, []);
+  for (const url of ['https://example.com/', 'https://example.org/', privateNavigation.url]) {
     assert.deepEqual(await run('s', { action: 'navigate', tabId: 'tab', url }), { ok: true });
     assert.deepEqual(requests.at(-1), { method: 'navigate', tabId: 'tab', url });
   }
+  assert.deepEqual(await run('s', { action: 'inspect', tabId: 'tab' }), { ok: true });
+  assert.deepEqual(requests.at(-1), { method: 'inspect', tabId: 'tab' });
 
   const click = { action: 'click', tabId: 'tab', documentId: 'doc', elementId: 'link' };
   const cancelled = () => assert.rejects(run('s', click), { code: 'action_cancelled' });

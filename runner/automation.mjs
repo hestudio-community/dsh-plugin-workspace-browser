@@ -19,7 +19,7 @@ function webUrl(value) {
   if (typeof value !== 'string' || value.length > LIMIT_URL || /[\\\x00-\x20\x7f]/.test(value)) return null;
   try {
     const url = new URL(value);
-    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.port && !url.username && !url.password ? url : null;
+    return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password ? url : null;
   } catch {
     return null;
   }
@@ -142,7 +142,7 @@ function onPage(method, expectedUrl, snapshot, args) {
   function allowedDestination(href) {
     try {
       const url = new URL(href, document.baseURI);
-      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.port && !url.username && !url.password;
+      return (url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password;
     } catch {
       return false;
     }

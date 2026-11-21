@@ -109,7 +109,7 @@
   "idleSave": "保存超时时间",
   "agentSettingsHeading": "智能体访问",
   "agentSettingsLabel": "允许智能体使用工作区浏览器",
-  "agentSettingsDescription": "适用于当前 DSH 配置档。每个会话仍需单独授权。关闭后将撤销现有授权，但不影响手动浏览。",
+  "agentSettingsDescription": "适用于当前 DSH 配置档。每个会话仍需单独授权。获准的智能体可访问 DSH 主机及其所在私有网络中的 HTTP(S) 服务。关闭后将撤销现有授权，但不影响手动浏览。",
   "agentSettingsLoading": "正在加载设置…",
   "agentSettingsSaving": "正在保存…",
   "agentSettingsUnavailable": "设置不可用。",

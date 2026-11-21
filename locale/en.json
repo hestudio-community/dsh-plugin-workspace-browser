@@ -109,7 +109,7 @@
   "idleSave": "Save timeout",
   "agentSettingsHeading": "Agent access",
   "agentSettingsLabel": "Allow agents to use the workspace browser",
-  "agentSettingsDescription": "Applies to the current DSH profile. Each session still needs its own authorization. Turning this off revokes existing authorizations without interrupting manual browsing.",
+  "agentSettingsDescription": "Applies to the current DSH profile. Each session still needs its own authorization. Authorized agents can visit HTTP(S) services on the DSH Host and its private network. Turning this off revokes existing authorizations without interrupting manual browsing.",
   "agentSettingsLoading": "Loading setting…",
   "agentSettingsSaving": "Saving…",
   "agentSettingsUnavailable": "Setting unavailable.",

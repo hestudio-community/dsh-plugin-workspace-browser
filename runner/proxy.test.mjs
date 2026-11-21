@@ -49,12 +49,18 @@ async function hostFixture(t, produce) {
 
 test('validates destination forms without opening any sockets', () => {
   assert.deepEqual(httpTarget('http://EXAMPLE.com:80/a?q=1'), { host: 'example.com', authority: 'example.com', path: '/a?q=1', port: 80 });
-  for (const target of ['/path', '//example.com/', 'http:///example.com/', 'https://example.com/', 'http://example.com:8080/',
+  assert.deepEqual(httpTarget('http://workstation:8080/'), { host: 'workstation', authority: 'workstation:8080', path: '/', port: 8080 });
+  assert.deepEqual(httpTarget('http://[::1]:65535?q=1'), { host: '::1', authority: '[::1]:65535', path: '/?q=1', port: 65535 });
+  for (const target of ['/path', '//example.com/', 'http:///example.com/', 'https://example.com/', 'http://example.com:/',
+    'http://example.com:0/', 'http://example.com:-1/', 'http://example.com:65536/', 'http://::1:8080/',
     'http://user@example.com/', 'http://@example.com/', 'http://example.com\\x', 'http://example.com/#fragment']) {
     assert.equal(httpTarget(target), null, target);
   }
   assert.deepEqual(connectTarget('example.com:443'), { host: 'example.com', port: 443 });
-  for (const target of ['https://example.com:443', 'example.com:80', 'example.com', 'example.com:443/path', 'user@example.com:443']) {
+  assert.deepEqual(connectTarget('localhost:8443'), { host: 'localhost', port: 8443 });
+  assert.deepEqual(connectTarget('[::1]:1'), { host: '::1', port: 1 });
+  for (const target of ['https://example.com:443', 'example.com', 'example.com:', 'example.com:0', 'example.com:65536',
+    'example.com:-1', 'example.com:443/path', 'example.com:443?key', 'example.com:443\r\n', 'user@example.com:443', '::1:443', '[::1:443']) {
     assert.equal(connectTarget(target), null, target);
   }
 });
@@ -62,16 +68,16 @@ test('validates destination forms without opening any sockets', () => {
 test('absolute HTTP target selects tunnel, rewrites origin-form and strips hop headers', { timeout: 5000 }, async t => {
   const host = await hostFixture(t, wire => wire.includes('\r\n\r\n') &&
     'HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close, X-Response-Private\r\nX-Response-Private: removed\r\n\r\nOK');
-  const result = await readResponse(host.address, 'http://public.example/path?q=1', {
+  const result = await readResponse(host.address, 'http://printer.local:8080/path?q=1', {
     Host: 'wrong.example',
     'Proxy-Authorization': 'not-forwarded',
     'Proxy-Connection': 'keep-alive',
     Connection: 'X-Private',
     'X-Private': 'not-forwarded',
   });
-  assert.deepEqual(host.opens.map(({ host, port }) => ({ host, port })), [{ host: 'public.example', port: 80 }]);
+  assert.deepEqual(host.opens.map(({ host, port }) => ({ host, port })), [{ host: 'printer.local', port: 8080 }]);
   assert.match(host.sent(), /^GET \/path\?q=1 HTTP\/1\.1\r\n/i);
-  assert.match(host.sent(), /\r\nhost: public\.example\r\n/i);
+  assert.match(host.sent(), /\r\nhost: printer\.local:8080\r\n/i);
   assert.doesNotMatch(host.sent(), /wrong\.example|proxy-|x-private/i);
   assert.equal(result.status, 200);
   assert.equal(result.text, 'OK');
@@ -87,9 +93,9 @@ test('CONNECT carries opaque bytes in both directions and preserves bytes before
   const received = [];
   socket.on('data', part => received.push(part));
   const done = once(socket, 'end');
-  socket.write('CONNECT public.example:443 HTTP/1.1\r\nHost: wrong.example:443\r\n\r\nmock-client-hello');
+  socket.write('CONNECT [::1]:8443 HTTP/1.1\r\nHost: wrong.example:443\r\n\r\nmock-client-hello');
   await done;
-  assert.deepEqual(host.opens.map(({ host, port }) => ({ host, port })), [{ host: 'public.example', port: 443 }]);
+  assert.deepEqual(host.opens.map(({ host, port }) => ({ host, port })), [{ host: '::1', port: 8443 }]);
   assert.equal(host.sent(), 'mock-client-hello');
   assert.equal(Buffer.concat(received).toString(), 'HTTP/1.1 200 Connection Established\r\n\r\nmock-server-hello');
 });
