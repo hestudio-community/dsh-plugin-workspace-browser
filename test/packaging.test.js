@@ -31,7 +31,7 @@ test('packages only the named runner inputs and client outputs, not image or rel
   assert.deepEqual([...pkg.files].sort(), [
     'src/host', 'src/shared', 'dist/client.js', 'dist/client.js.LEGAL.txt',
     ...buildFiles.map((name) => `runner/${name}`),
-    'cordis.patch.yml', 'locale/*.json', 'icon.svg', 'docs',
+    'cordis.patch.yml', 'locale/*.json', 'icon.svg', 'assets/*.png', 'docs',
   ].sort());
   assert.equal(pkg.scripts.prepack, 'node scripts/runner-release.mjs verify');
   assert.equal(pkg.scripts['build:runner'], 'node scripts/runner-release.mjs build');

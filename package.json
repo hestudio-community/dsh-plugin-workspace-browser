@@ -1,8 +1,18 @@
 {
   "name": "dsh-plugin-workspace-browser",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "type": "module",
   "description": "An isolated workspace Chromium sidebar for DeepSeek Harness Web and Desktop.",
+  "license": "MIT",
+  "author": "hestudio-community",
+  "homepage": "https://github.com/hestudio-community/dsh-plugin-workspace-browser#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hestudio-community/dsh-plugin-workspace-browser.git"
+  },
+  "bugs": {
+    "url": "https://github.com/hestudio-community/dsh-plugin-workspace-browser/issues"
+  },
   "engines": {
     "node": ">=22",
     "dsh": ">=0.2.2-rc.3 <0.2.3-0"
@@ -11,7 +21,8 @@
     ".": "./src/host/index.js",
     "./client": "./dist/client.js",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./icon-180": "./assets/icon-180.png"
   },
   "files": [
     "src/host",
@@ -33,6 +44,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
+    "assets/*.png",
     "docs"
   ],
   "scripts": {
