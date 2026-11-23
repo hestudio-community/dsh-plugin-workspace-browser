@@ -19,8 +19,8 @@ cookies.
   restarts and upgrades.
 - The registered workspace directory is mounted read/write at `/workspace`,
   Chromium's download directory.
-- **Chromium controls** to restart Chromium (keeping the profile and tabs) or
-  close the browser run.
+- **Chromium controls** to restart Chromium while keeping the profile and tabs,
+  or to close the browser run.
 - An idle timeout that retires the browser after its last view disconnects.
 - Optional agent access, off by default in each Session. The agent tool can
   list tabs, navigate, inspect, click, fill, and scroll.
@@ -29,7 +29,8 @@ cookies.
   Paste into the focused display using your usual paste shortcut. To copy back
   automatically, your browser must allow clipboard writes for the DSH origin.
   If it does not, use **Chromium controls → Transfer clipboard text**. Only plain
-  text up to 16 KiB per transfer is supported; images and files are not synced.
+  text within the per-transfer limit enforced by the plugin is supported; images
+  and files are not synced.
 - Optional remote Web access through an exact allow-list of trusted origins.
 
 ## Requirements
