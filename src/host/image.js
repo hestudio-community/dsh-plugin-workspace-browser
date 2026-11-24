@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { BrowserError } from '../shared/protocol.js';
 import {
-  IMAGE_PLATFORM, RUNNER_BUILD_FILES, RUNNER_PROTOCOL, RUNNER_PROTOCOL_LABEL, RUNNER_VERSION, RUNNER_VERSION_LABEL,
+  runnerPlatform, RUNNER_BUILD_FILES, RUNNER_PROTOCOL, RUNNER_PROTOCOL_LABEL, RUNNER_VERSION, RUNNER_VERSION_LABEL,
   runnerBuildArgs, runnerImageTag,
 } from '../shared/runner-image.js';
 
@@ -22,7 +22,7 @@ export function environmentError(code) {
     docker_cli_missing: 'The local Docker CLI was not found.',
     docker_cli_unavailable: 'The local Docker CLI could not be run.',
     docker_engine_unavailable: 'The local Docker engine could not be reached.',
-    docker_engine_incompatible: 'A local Linux/amd64 Docker engine is required.',
+    docker_engine_incompatible: 'A local Linux/amd64 or Linux/arm64 Docker engine is required.',
     runner_image_missing: 'The Runner image is missing or could not be inspected. Check the environment or build the image in the plugin settings.',
     runner_image_incompatible: 'The local Runner image is incompatible. Rebuild it in the plugin settings.',
     runner_build_inputs_missing: 'Runner build files are missing or unreadable. Reinstall the complete plugin package.',
@@ -56,7 +56,7 @@ export function createRunnerEnvironment({ configure, command, signal, rootAccoun
     const row = output.replace(/\r?\n$/, '');
     const [id, platform, protocol, version, ...extra] = row.split(' ');
     if (/[\r\n]/.test(row) || extra.length || !imageIdPattern.test(id) ||
-        platform !== IMAGE_PLATFORM || protocol !== RUNNER_PROTOCOL || version !== runnerVersion) {
+        platform !== docker.imagePlatform || protocol !== RUNNER_PROTOCOL || version !== runnerVersion) {
       throw environmentError('runner_image_incompatible');
     }
     return id;
@@ -75,10 +75,12 @@ export function createRunnerEnvironment({ configure, command, signal, rootAccoun
       async () => {
         const result = await command(docker, ['info', '--format', '{{.OSType}}/{{.Architecture}} {{json .SecurityOptions}}'], signal, 'engine');
         if (result.code !== 0 || !result.output.trim()) throw environmentError('docker_engine_unavailable');
-        const match = /^linux\/(?:amd64|x86_64) (.+)$/.exec(result.output.trim());
-        if (!match) throw environmentError('docker_engine_incompatible');
+        const match = /^(linux\/\S+) (.+)$/.exec(result.output.trim());
+        const platform = runnerPlatform(match?.[1]);
+        if (!platform) throw environmentError('docker_engine_incompatible');
+        docker.imagePlatform = platform;
         let options;
-        try { options = JSON.parse(match[1]); } catch { /* Unknown identity mapping: fail closed. */ }
+        try { options = JSON.parse(match[2]); } catch { /* Unknown identity mapping: fail closed. */ }
         if (!Array.isArray(options) || options.some(value => typeof value !== 'string' || /(?:^|,)name=(?:rootless|userns)(?:,|$)/.test(value))) {
           throw environmentError('docker_identity_unsupported');
         }
@@ -134,7 +136,7 @@ export function createRunnerEnvironment({ configure, command, signal, rootAccoun
         const info = await inputStat(join(context, name)).catch(() => null);
         if (!info?.isFile() || !info.size) throw environmentError('runner_build_inputs_missing');
       }
-      const result = await command(docker, runnerBuildArgs(context, join(context, 'Dockerfile'), runnerVersion), signal, 'build');
+      const result = await command(docker, runnerBuildArgs(context, join(context, 'Dockerfile'), runnerVersion, docker.imagePlatform), signal, 'build');
       signal.throwIfAborted();
       if (result.code !== 0) throw environmentError('runner_build_failed');
       try { await inspectImage(docker); }

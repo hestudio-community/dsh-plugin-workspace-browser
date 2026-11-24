@@ -57,7 +57,7 @@
   "runnerWorkspacePermissionDenied": "The browser cannot read or write the mounted workspace. Check its directory permissions and ACLs.",
   "dockerConfigInvalid": "Invalid Docker configuration.",
   "dockerEngineUnavailable": "Could not reach the local Docker engine. Make sure Docker is running.",
-  "dockerEngineIncompatible": "The workspace browser requires a local Linux/amd64 Docker engine.",
+  "dockerEngineIncompatible": "The workspace browser requires a local Linux/amd64 or Linux/arm64 Docker engine.",
   "runnerImageMissing": "The Chromium runner image is missing. Build it in the plugin’s Environment settings.",
   "runnerImageIncompatible": "The Chromium runner image is incompatible. Rebuild it in the plugin’s Environment settings.",
   "runnerBuildInputsMissing": "The Chromium runner build files are missing or unreadable. Reinstall the complete plugin bundle.",

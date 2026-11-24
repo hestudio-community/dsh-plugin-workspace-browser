@@ -8,6 +8,12 @@ export const RUNNER_VERSION_LABEL = `dev.dsh.${PROJECT_ID}.plugin-version`;
 export const RUNNER_VERSION_ARG = 'DSH_PLUGIN_VERSION';
 export const IMAGE_PLATFORM = 'linux/amd64';
 
+export function runnerPlatform(value) {
+  if (value === 'linux/amd64' || value === 'linux/x86_64') return 'linux/amd64';
+  if (value === 'linux/arm64' || value === 'linux/aarch64') return 'linux/arm64';
+  return null;
+}
+
 const semver = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/;
 
 export function runnerImageTag(version) {
@@ -21,8 +27,9 @@ export function runnerImageTag(version) {
 
 export const RUNNER_IMAGE = runnerImageTag(RUNNER_VERSION);
 
-export function runnerBuildArgs(context, dockerfile, version = RUNNER_VERSION) {
-  return ['build', '--platform', IMAGE_PLATFORM, '--tag', runnerImageTag(version),
+export function runnerBuildArgs(context, dockerfile, version = RUNNER_VERSION, platform = IMAGE_PLATFORM) {
+  if (!runnerPlatform(platform) || runnerPlatform(platform) !== platform) throw new Error('Invalid Runner platform');
+  return ['build', '--platform', platform, '--tag', runnerImageTag(version),
     '--build-arg', `${RUNNER_VERSION_ARG}=${version}`, '--build-arg', `DSH_RUNNER_PROTOCOL=${RUNNER_PROTOCOL}`, '--file', dockerfile, context];
 }
 
@@ -33,6 +40,7 @@ export const RUNNER_BUILD_FILES = Object.freeze([
   'automation.mjs',
   'clipboard.mjs',
   'identity.mjs',
+  'network-isolation.mjs',
   'profile-recovery.mjs',
   'protocol.mjs',
   'proxy.mjs',

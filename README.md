@@ -37,9 +37,11 @@ cookies.
 
 ## Requirements
 
-- A local Docker engine with Linux/amd64 container support. Windows requires
-  Docker Desktop in Linux-container mode; on Linux, use a local rootful engine
-  without user namespace remapping.
+- A local Docker engine running Linux on native `amd64` or `arm64`.
+  Windows requires Docker Desktop in Linux-container mode; macOS requires local
+  Docker Desktop on Intel or Apple Silicon. On Linux, use a local rootful engine
+  without user namespace remapping. The runner build, launch, and image checks
+  use the daemon's architecture, not an emulated platform.
 - A registered DSH workspace. Use a dedicated workspace if the browser should
   not see other project files.
 - The DSH Host must be able to reach the sites you open. Host file transfer,
@@ -70,7 +72,20 @@ workspace Chromium can reach.
    sidebar, and choose **+ → Open workspace browser**.
 
 Opening Chromium only inspects the runner image; it never builds one. After
-upgrading the plugin, build the matching image.
+upgrading the plugin, build the matching image. The version tag stays the same
+across supported architectures; the local image must match the Docker daemon.
+
+On macOS, the default Docker CLI is the first existing path in this order:
+`/usr/local/bin/docker`, `$HOME/.docker/bin/docker`, then
+`/Applications/Docker.app/Contents/Resources/bin/docker`. The plugin uses
+`$HOME/.docker/run/docker.sock` when it exists, otherwise `/var/run/docker.sock`.
+Only local Docker Desktop is supported. Set `dockerExecutable` to an absolute
+path to override the CLI selection; this does not select a remote engine.
+
+Apple Silicon runner checks have passed environment detection, native image
+building, sandboxed startup, navigation, inspection, and a clean restart.
+Intel runtime checks and real Desktop and Web UI verification remain pending;
+see the [macOS acceptance checks](docs/developer/development.md#macos-acceptance-checks).
 
 ## Learn more
 

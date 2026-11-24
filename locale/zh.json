@@ -57,7 +57,7 @@
   "runnerWorkspacePermissionDenied": "浏览器无法读写已挂载的工作区。请检查工作区目录权限和 ACL。",
   "dockerConfigInvalid": "Docker 配置无效。",
   "dockerEngineUnavailable": "无法连接本地 Docker 引擎。请确认 Docker 正在运行。",
-  "dockerEngineIncompatible": "工作区浏览器需要本地 Linux/amd64 Docker 引擎。",
+  "dockerEngineIncompatible": "工作区浏览器需要本地 Linux/amd64 或 Linux/arm64 Docker 引擎。",
   "runnerImageMissing": "缺少 Chromium 运行镜像。请在插件的「运行环境」设置中构建镜像。",
   "runnerImageIncompatible": "Chromium 运行镜像不兼容。请在插件的「运行环境」设置中重新构建镜像。",
   "runnerBuildInputsMissing": "Chromium 运行镜像的构建文件缺失或无法读取。请重新安装完整的插件包。",

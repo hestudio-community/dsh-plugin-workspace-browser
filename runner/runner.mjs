@@ -10,6 +10,7 @@ import puppeteer from 'puppeteer-core';
 import { createClipboard } from './clipboard.mjs';
 import { AutomationError, createAutomation } from './automation.mjs';
 import { browserIdentity, displayIdentity, migrateProfile, privilegeArgs, workspaceStartupError } from './identity.mjs';
+import { networkIsolated } from './network-isolation.mjs';
 import { recoverProfile } from './profile-recovery.mjs';
 import { readFrames, send, sendChunk } from './protocol.mjs';
 import { watchWindowTitle } from './window-title.mjs';
@@ -190,9 +191,7 @@ async function setup() {
   let phase = 'container isolation is unavailable';
   try {
     if (process.platform !== 'linux' || process.getuid() !== 0) throw new Error();
-    const interfaces = Object.entries(networkInterfaces());
-    const devices = (await readFile('/proc/net/dev', 'utf8')).split('\n').slice(2).filter(line => line.trim()).map(line => line.split(':')[0].trim());
-    if (devices.length !== 1 || devices[0] !== 'lo' || interfaces.some(([name, entries]) => name !== 'lo' || !entries.every(entry => entry.internal))) throw new Error();
+    if (!await networkIsolated(networkInterfaces())) throw new Error();
     if (!/^NoNewPrivs:\s*1$/m.test(await readFile('/proc/self/status', 'utf8'))) throw new Error();
     const mountPaths = (await readFile('/proc/self/mountinfo', 'utf8')).split('\n').map(line => line.split(' ')[4]).filter(Boolean);
     const ids = async account => Promise.all(['-u', '-g'].map(async flag => Number((await exec('id', [flag, account])).stdout.trim())));

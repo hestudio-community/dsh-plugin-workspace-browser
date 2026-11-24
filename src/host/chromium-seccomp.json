@@ -852,7 +852,8 @@
       ],
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "names": [
@@ -871,7 +872,8 @@
       ],
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "names": [
@@ -883,7 +885,7 @@
       "names": ["clone"],
       "action": "SCMP_ACT_ALLOW",
       "args": [{ "index": 0, "value": 2114060288, "op": "SCMP_CMP_MASKED_EQ", "valueTwo": 268435456 }],
-      "includes": { "arches": ["amd64"] }
+      "includes": { "arches": ["amd64", "arm64"] }
     },
     {
       "args": [
@@ -895,7 +897,8 @@
       ],
       "includes": {
         "arches": [
-          "amd64"
+          "amd64",
+          "arm64"
         ]
       },
       "names": [
@@ -904,5 +907,5 @@
       "action": "SCMP_ACT_ALLOW"
     }
   ],
-  "comment": "Based on Moby profiles seccomp/v0.1.0, Apache-2.0. Modified to permit the Chromium namespace sandbox on amd64."
+  "comment": "Based on Moby profiles seccomp/v0.1.0, Apache-2.0. Modified to permit the Chromium namespace sandbox on amd64 and arm64."
 }

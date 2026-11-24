@@ -4,6 +4,7 @@
 !automation.mjs
 !clipboard.mjs
 !identity.mjs
+!network-isolation.mjs
 !profile-recovery.mjs
 !protocol.mjs
 !proxy.mjs

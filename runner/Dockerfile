@@ -18,7 +18,7 @@ RUN apt-get update \
 
 WORKDIR /app
 RUN npm install --omit=dev --no-audit --no-fund --save-exact puppeteer-core@24.31.0
-COPY automation.mjs clipboard.mjs identity.mjs profile-recovery.mjs protocol.mjs proxy.mjs runner.mjs window-title.mjs chromium.sh openbox.xml ./
+COPY automation.mjs clipboard.mjs identity.mjs network-isolation.mjs profile-recovery.mjs protocol.mjs proxy.mjs runner.mjs window-title.mjs chromium.sh openbox.xml ./
 RUN sed -i 's/\r$//' ./chromium.sh && chmod 0755 ./chromium.sh
 
 ARG DSH_PLUGIN_VERSION

@@ -62,7 +62,7 @@ test('diagnostics report the failing stage, skip dependencies, and give startup 
     [1, 'docker_cli_missing', signalFailure('docker_cli_missing')],
     [1, 'docker_cli_unavailable', missing],
     [2, 'docker_engine_unavailable', missing],
-    [2, 'docker_engine_incompatible', result('linux/arm64')],
+    [2, 'docker_engine_incompatible', result('linux/ppc64le []')],
     [3, 'runner_image_missing', missing],
     [3, 'runner_image_incompatible', result(`${imageId} linux/amd64`)],
     [3, 'runner_image_incompatible', result(`${imageId} linux/amd64 ${RUNNER_PROTOCOL}`)],
@@ -88,6 +88,24 @@ test('diagnostics report the failing stage, skip dependencies, and give startup 
       ...paths.slice(index + 1).map(id => ({ id, status: 'skipped' })),
     ]);
     assert.equal(calls.length, index);
+  }
+});
+
+test('engine architecture aliases select native build and image validation platforms', async () => {
+  for (const [arch, platform] of [['amd64', 'linux/amd64'], ['x86_64', 'linux/amd64'], ['arm64', 'linux/arm64'], ['aarch64', 'linux/arm64']]) {
+    let imagePlatform = platform;
+    const { environment, calls } = fixture({ reply(phase) {
+      if (phase === 'engine') return result(`linux/${arch} ["name=seccomp,profile=builtin"]`);
+      if (phase === 'image') return result(`${imageId} ${imagePlatform} ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`);
+      return defaultReply(phase);
+    } });
+    assert.deepEqual((await environment.check()).checks, passed);
+    environment.startBuild();
+    await environment.drain();
+    assert.equal(environment.buildStatus().state, 'succeeded');
+    assert.equal(calls.find(call => call.phase === 'build').args[2], platform);
+    imagePlatform = platform === 'linux/amd64' ? 'linux/arm64' : 'linux/amd64';
+    await assert.rejects(environment.resolveImage(), { code: 'runner_image_incompatible' });
   }
 });
 

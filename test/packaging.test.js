@@ -6,7 +6,7 @@ import {
   RUNNER_VERSION, RUNNER_VERSION_ARG, RUNNER_VERSION_LABEL, runnerBuildArgs, runnerImageTag,
 } from '../src/shared/runner-image.js';
 
-const runtimeFiles = ['automation.mjs', 'clipboard.mjs', 'identity.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'window-title.mjs', 'chromium.sh', 'openbox.xml'];
+const runtimeFiles = ['automation.mjs', 'clipboard.mjs', 'identity.mjs', 'network-isolation.mjs', 'profile-recovery.mjs', 'protocol.mjs', 'proxy.mjs', 'runner.mjs', 'window-title.mjs', 'chromium.sh', 'openbox.xml'];
 const buildFiles = ['Dockerfile', '.dockerignore', ...runtimeFiles];
 const runner = new URL('../runner/', import.meta.url);
 
@@ -91,5 +91,8 @@ test('shared build arguments pass the exact version separately from the mapped D
   ]);
   assert.ok(runnerBuildArgs('/runner', '/runner/Dockerfile').includes(`DSH_PLUGIN_VERSION=${RUNNER_VERSION}`));
   const script = await readFile(new URL('../scripts/runner-release.mjs', import.meta.url), 'utf8');
-  assert.match(script, /spawnSync\('docker', runnerBuildArgs\(runnerDir, dockerfile\),/);
+  assert.match(script, /runnerPlatform\(info.stdout.trim\(\)\)/);
+  assert.match(script, /runnerBuildArgs\(runnerDir, dockerfile, undefined, platform\)/);
+  assert.equal(runnerBuildArgs('/runner', '/runner/Dockerfile', version, 'linux/arm64')[2], 'linux/arm64');
+  assert.throws(() => runnerBuildArgs('/runner', '/runner/Dockerfile', version, 'linux/ppc64le'), /Invalid Runner platform/);
 });

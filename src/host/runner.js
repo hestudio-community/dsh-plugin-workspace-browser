@@ -1,12 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
+import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PROJECT_ID } from '../shared/identity.js';
 import { BrowserError, MAX_CHUNK, MAX_FRAME, validId } from '../shared/protocol.js';
 import { isTcpDestination } from './egress.js';
-import { IMAGE_PLATFORM } from '../shared/runner-image.js';
 import { createRunnerEnvironment, environmentError } from './image.js';
 
 import { resolveRootAccount, rootAccountName } from './root-account.js';
@@ -39,17 +40,23 @@ function decodeChunk(value) {
   return bytes.length <= MAX_CHUNK && bytes.toString('base64') === value ? bytes : null;
 }
 
-export function dockerCommand(config, host = process) {
+export function dockerCommand(config, host = process, exists = existsSync) {
   const windows = host.platform === 'win32';
+  const mac = host.platform === 'darwin';
+  const home = mac ? (host.env.HOME || homedir()) : '';
+  const macExecutables = ['/usr/local/bin/docker', join(home, '.docker/bin/docker'), '/Applications/Docker.app/Contents/Resources/bin/docker'];
   const executable = config.dockerExecutable || (windows
-    ? join(process.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'resources', 'bin', 'docker.exe')
-    : '/usr/bin/docker');
+    ? join(host.env.ProgramFiles || 'C:\\Program Files', 'Docker', 'Docker', 'resources', 'bin', 'docker.exe')
+    : mac ? (macExecutables.find(path => exists(path)) || macExecutables[0]) : '/usr/bin/docker');
   const seccomp = config.seccompProfile || DEFAULT_SECCOMP;
   if ([executable, seccomp].some(path => !isAbsolute(path) || /[\0\r\n]/.test(path))) {
     throw environmentError('docker_config_invalid');
   }
-  const endpoint = windows ? 'npipe:////./pipe/dockerDesktopLinuxEngine' : 'unix:///var/run/docker.sock';
-  if ((host.env.DOCKER_HOST && host.env.DOCKER_HOST !== endpoint) ||
+  const systemEndpoint = windows ? 'npipe:////./pipe/dockerDesktopLinuxEngine' : 'unix:///var/run/docker.sock';
+  const macSocket = join(home, '.docker/run/docker.sock');
+  const endpoint = mac && exists(macSocket) ? `unix://${macSocket}` : systemEndpoint;
+  const localEndpoints = mac ? [systemEndpoint, `unix://${macSocket}`] : [endpoint];
+  if ((host.env.DOCKER_HOST && !localEndpoints.includes(host.env.DOCKER_HOST)) ||
       (host.env.DOCKER_CONTEXT && !['default', 'desktop-linux'].includes(host.env.DOCKER_CONTEXT))) {
     throw environmentError('docker_endpoint_unsupported');
   }
@@ -315,7 +322,7 @@ function createRunner(config, workspaceId, onExit, workspacePath, environment, a
       const mount = await workspaceMount(workspacePath);
       startupSignal.throwIfAborted();
       child = spawnDocker(docker, [
-        'run', '--rm', '--interactive', '--init', '--pull=never', '--network=none', `--platform=${IMAGE_PLATFORM}`,
+        'run', '--rm', '--interactive', '--init', '--pull=never', '--network=none', `--platform=${docker.imagePlatform}`,
         '--security-opt=no-new-privileges', `--security-opt=seccomp=${docker.seccomp}`,
         '--pids-limit=384', '--shm-size=256m', '--memory=2g',
         '--name', name, '--label', `${PROJECT_LABEL}=1`, '--label', `${INSTANCE_LABEL}=${generation}`,

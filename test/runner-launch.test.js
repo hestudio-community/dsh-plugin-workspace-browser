@@ -15,7 +15,7 @@ const key = id => `dsh-plugin-workspace-browser-${createHash('sha256').update('d
 const label = 'dev.dsh.dsh-plugin-workspace-browser.instance';
 const imageId = `sha256:${'a'.repeat(64)}`;
 
-function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' }, invalidCleanup = false, imageMissing = false } = {}) {
+function fakeEngine({ platform = IMAGE_PLATFORM, active = [], preflightCode = 0, frame = { type: 'ready' }, invalidCleanup = false, imageMissing = false } = {}) {
   const containers = new Map(active.map(row => [row.name, row]));
   const launches = [];
   const stops = [];
@@ -24,10 +24,10 @@ function fakeEngine({ active = [], preflightCode = 0, frame = { type: 'ready' },
   async function queryDocker(_docker, args, signal) {
     signal.throwIfAborted();
     if (args[0] === '--version') return result('Docker version 29.0.0');
-    if (args[0] === 'info') return result('linux/x86_64 ["name=seccomp,profile=builtin"]');
+    if (args[0] === 'info') return result(`${platform === 'linux/arm64' ? 'linux/aarch64' : 'linux/x86_64'} ["name=seccomp,profile=builtin"]`);
     if (args[0] === 'image') {
       assert.equal(args.at(-1), RUNNER_IMAGE);
-      return imageMissing ? result('', 1) : result(`${imageId} ${IMAGE_PLATFORM} ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`);
+      return imageMissing ? result('', 1) : result(`${imageId} ${platform} ${RUNNER_PROTOCOL} ${RUNNER_VERSION}`);
     }
     if (args[0] === 'stop') {
       const id = args.at(-1);
@@ -281,6 +281,47 @@ test('identity rejects unmappable IDs, preserves actual groups, and omits mappin
   for (const env of [{ DOCKER_HOST: 'ssh://remote' }, { DOCKER_CONTEXT: 'remote' }]) {
     assert.throws(() => dockerCommand({ dockerExecutable: process.execPath }, { ...host, env }), { code: 'docker_endpoint_unsupported' });
   }
+});
+
+test('macOS resolves Desktop CLI and user socket without depending on shell PATH', () => {
+  const home = '/Users/test owner';
+  const host = { platform: 'darwin', env: { HOME: home } };
+  const candidates = ['/usr/local/bin/docker', `${home}/.docker/bin/docker`, '/Applications/Docker.app/Contents/Resources/bin/docker'];
+  const socket = `${home}/.docker/run/docker.sock`;
+  for (let i = 0; i < candidates.length; i++) {
+    const docker = dockerCommand({}, host, path => [...candidates.slice(i), socket].includes(path));
+    assert.equal(docker.executable, candidates[i]);
+    assert.equal(docker.endpoint, `unix://${socket}`);
+    assert.deepEqual(docker.identity, []);
+  }
+  const fallback = dockerCommand({}, host, () => false);
+  assert.equal(fallback.executable, candidates[0]);
+  assert.equal(fallback.endpoint, 'unix:///var/run/docker.sock');
+  assert.equal(dockerCommand({ dockerExecutable: '/custom/docker' }, host, () => false).executable, '/custom/docker');
+  assert.throws(() => dockerCommand({ dockerExecutable: 'docker' }, host), { code: 'docker_config_invalid' });
+  for (const DOCKER_HOST of ['ssh://remote', 'tcp://127.0.0.1:2375', 'unix:///other/docker.sock']) {
+    assert.throws(() => dockerCommand({}, { ...host, env: { ...host.env, DOCKER_HOST } }), { code: 'docker_endpoint_unsupported' });
+  }
+  for (const DOCKER_HOST of ['unix:///var/run/docker.sock', `unix://${socket}`]) {
+    const docker = dockerCommand({}, { ...host, env: { ...host.env, DOCKER_HOST, DOCKER_CONTEXT: 'desktop-linux' } }, () => true);
+    assert.equal(docker.env.DOCKER_HOST, undefined);
+    assert.equal(docker.env.DOCKER_CONTEXT, undefined);
+  }
+});
+
+test('Apple Silicon launches native arm64 with the existing isolation and no Host UID mapping', async () => {
+  const engine = fakeEngine({ platform: 'linux/arm64' });
+  const launcher = engine.launcher({ platform: 'darwin' });
+  const runner = start(launcher, 'apple-silicon');
+  try {
+    await runner.ready;
+    const [{ args }] = engine.launches;
+    assert.ok(args.includes('--platform=linux/arm64'));
+    assert.ok(args.includes('--network=none'));
+    assert.ok(args.includes('--security-opt=no-new-privileges'));
+    assert.ok(args.some(arg => arg.startsWith('--security-opt=seccomp=')));
+    assert.equal(args.some(arg => /DSH_BROWSER_(UID|GID|GROUPS)=/.test(arg)), false);
+  } finally { await runner.stop(); await launcher.close(); }
 });
 
 test('two Hosts racing for one profile do not start or stop a second container', async () => {
