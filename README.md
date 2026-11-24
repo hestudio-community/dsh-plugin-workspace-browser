@@ -15,8 +15,10 @@ cookies.
 - A live, resizable Chromium window in a native sidebar tab, alongside tools
   such as Files and Terminal.
 - The sidebar tab title follows the active Chromium window title.
-- A persistent profile per workspace: cookies, bookmarks, and history survive
-  restarts and upgrades.
+- A persistent profile per workspace stores cookies, bookmarks, and history.
+  Browser restarts preserve this data. See the upgrade guidance in the
+  [development guide](docs/developer/development.md#build-and-verification-status)
+  before upgrading.
 - The registered workspace directory is mounted read/write at `/workspace`,
   Chromium's download directory.
 - **Chromium controls** to restart Chromium while keeping the profile and tabs,
@@ -46,8 +48,7 @@ cookies.
 ## Website access
 
 Chromium can open HTTP(S) sites reachable from the DSH Host, including LAN and
-IPv6 sites, `localhost`, and sites on non-default ports. For example, enter
-`http://192.168.31.1` to open a device at that LAN address. `localhost` means the
+IPv6 sites, `localhost`, and sites on non-default ports. `localhost` means the
 machine running DSH, not a remote viewer's computer. Chromium security rules,
 TLS validation, and the Host's DNS, routing, and firewall still apply.
 
@@ -61,9 +62,9 @@ workspace Chromium can reach.
 
 1. Install the release bundle archive in **Plugin Manager** and enable
    `dsh-plugin-workspace-browser`.
-2. Open **Plugins → Installed → dsh-plugin-workspace-browser → Environment
-   check** and select **Check environment**. If the Chromium runner image is
-   missing or incompatible, use **Build current version**. The image is built
+2. Open **Plugins → Installed → dsh-plugin-workspace-browser → Environment**
+   and select **Check environment**. If the Chromium runner image is missing
+   or incompatible, use **Build current version**. The image is built
    locally with Docker and can take several minutes.
 3. Open or create a Session in a registered workspace, expand the right
    sidebar, and choose **+ → Open workspace browser**.

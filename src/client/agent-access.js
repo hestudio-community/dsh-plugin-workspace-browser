@@ -1,6 +1,12 @@
 import { admissionMessage, post } from './http.js';
 
 const POLL_MS = 2000;
+const accessMessages = new Map([
+  ['session_workspace_missing', 'sessionWorkspaceMissing'],
+  ['agent_access_denied', 'agentAccessDenied'],
+  ['browser_not_ready', 'browserNotReady'],
+  ['plugin_unavailable', 'pluginUnavailable'],
+]);
 
 export function makeUseAgentAccess(React) {
   const { useLayoutEffect, useRef, useState } = React;
@@ -99,8 +105,8 @@ export function makeUseAgentAccess(React) {
       && (granted || (status?.provider === 'enabled' && status.canGrant && !statusError));
     const control = actions.current;
     function errorText(error) {
-      const key = admissionMessage(error?.code);
-      return key ? t(key) : (error?.userMessage || t('requestFailed'));
+      const key = admissionMessage(error?.code) ?? accessMessages.get(error?.code);
+      return t(key ?? 'requestFailed');
     }
     const reason = statusError ? errorText(statusError)
       : status?.provider === 'conflict' ? t('providerConflict') : null;

@@ -1338,7 +1338,7 @@ test('the connected clipboard switch grants only its display binding and retires
   assert.equal(requests.some(([p]) => p === '/clipboard/revoke' || p === '/clipboard/read'), false);
 });
 
-test('agent access reports Host errors and preserves the confirmed state', async (t) => {
+test('agent access localizes unknown Host errors and preserves the confirmed state', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const data = agentStatus();
   let statusError;
@@ -1358,7 +1358,7 @@ test('agent access reports Host errors and preserves the confirmed state', async
   await flush();
   await toggleSwitch(view.access());
   assert.equal(view.access().checked, false);
-  assert.equal(accessAlert(view.errors()), 'Could not grant access (grant_failed)');
+  assert.equal(accessAlert(view.errors()), 'requestFailed');
   grantError = null;
   await toggleSwitch(view.access());
   assert.equal(view.access().checked, true);
@@ -1368,13 +1368,47 @@ test('agent access reports Host errors and preserves the confirmed state', async
   await flush();
   assert.equal(view.access().checked, true);
   assert.equal(view.access().disabled, false);
-  assert.equal(accessAlert(view.errors()), 'Could not check access (status_failed)');
+  assert.equal(accessAlert(view.errors()), 'requestFailed');
   statusError = null;
   t.mock.timers.tick(2000);
   await flush();
   await toggleSwitch(view.access());
   assert.equal(view.access().checked, true);
-  assert.equal(accessAlert(view.errors()), 'Could not revoke access (revoke_failed)');
+  assert.equal(accessAlert(view.errors()), 'requestFailed');
+});
+
+test('agent authorization errors use localized messages without raw Host text or codes', async (t) => {
+  let code;
+  t.mock.method(globalThis, 'fetch', async url => url.endsWith('/agent/status')
+    ? response(agentStatus())
+    : response({ ok: false, code, message: 'Raw Host diagnostic' }));
+  for (const locale of ['en', 'zh']) {
+    const labels = JSON.parse(readFileSync(new URL(`../locale/${locale}.json`, import.meta.url), 'utf8'));
+    const view = mountView('one', new AbortController().signal, { t: key => labels[key] });
+    try {
+      await flush();
+      for (const [errorCode, key] of [
+        ['origin_denied', 'localDshRequired'],
+        ['access_denied', 'signIn'],
+        ['session_workspace_missing', 'sessionWorkspaceMissing'],
+        ['agent_access_denied', 'agentAccessDenied'],
+        ['browser_not_ready', 'browserNotReady'],
+        ['plugin_unavailable', 'pluginUnavailable'],
+        ['unknown_error', 'requestFailed'],
+      ]) {
+        code = errorCode;
+        await toggleSwitch(view.access());
+        const message = accessAlert(view.errors());
+        assert.ok(labels[key]);
+        assert.equal(message, labels[key]);
+        assert.equal(message.includes('Raw Host diagnostic'), false);
+        assert.equal(message.includes(errorCode), false);
+        assert.equal(view.access().checked, false);
+      }
+    } finally {
+      view.dispose();
+    }
+  }
 });
 
 test('changing Sessions ignores a late mutation and never shows another Session’s authorization', async (t) => {

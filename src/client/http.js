@@ -52,7 +52,6 @@ export async function post(path, body, signal) {
   const error = new Error('Workspace browser request failed');
   if (result?.ok === false && typeof result.code === 'string' && typeof result.message === 'string') {
     error.code = result.code;
-    error.userMessage = `${result.message} (${result.code})`;
   }
   throw error;
 }
