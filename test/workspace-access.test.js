@@ -34,6 +34,141 @@ test('refuse visible bind alias sources on the Host filesystem', () => {
   }
   checkMounts('/projects/ab', mounts, '21');
 });
+test('workspace mount checks allow full filesystems and reject overlapping same-device aliases', async t => {
+  const root = '21 1 8:1 / / rw - ext4 /dev/root rw';
+  const disk = '22 21 8:2 / /disk rw - ext4 /dev/data rw';
+  const alias = (device, source) => `24 21 ${device} ${source} /alias rw - ext4 /dev/data rw`;
+  const cases = [
+    { name: 'independent device', path: '/disk/projects', rows: [disk], id: '22' },
+    { name: 'nested independent mount', path: '/disk/nested/projects', rows: [disk, '23 22 8:3 / /disk/nested rw - ext4 /dev/nested rw'], id: '23' },
+    { name: 'escaped mountpoint', path: '/disk name/projects', rows: [disk.replace('/disk ', '/disk\\040name ')], id: '22' },
+    { name: 'same source name on another device', path: '/disk/projects', rows: [disk, alias('8:3', '/projects')], id: '22' },
+    { name: 'disjoint same-device alias', path: '/disk/projects', rows: [disk, alias('8:2', '/projects-other')], id: '22' },
+    { name: 'alias uses filesystem coordinates', path: '/disk/projects', rows: [disk, alias('8:2', '/disk/projects')], id: '22' },
+    { name: 'alias of target', path: '/disk/projects', rows: [disk, alias('8:2', '/projects')], id: '22', reject: true },
+    { name: 'alias of ancestor', path: '/disk/projects/child', rows: [disk, alias('8:2', '/projects')], id: '22', reject: true },
+    { name: 'alias of descendant', path: '/disk/projects', rows: [disk, alias('8:2', '/projects/child')], id: '22', reject: true },
+    { name: 'escaped alias source', path: '/disk/project name', rows: [disk, alias('8:2', '/project\\040name')], id: '22', reject: true },
+    { name: 'subtree bind mount', path: '/disk/projects', rows: [disk.replace('8:2 / ', '8:2 /projects ')], id: '22', reject: true },
+    { name: 'subvolume root', path: '/disk/projects', rows: [disk.replace('8:2 / ', '8:2 /@data ')], id: '22', reject: true },
+    { name: 'mountpoint does not contain path', path: '/disk-other/projects', rows: [disk], id: '22', reject: true },
+    { name: 'missing target mount metadata', path: '/disk/projects', rows: [disk], id: '99', reject: true },
+  ];
+  for (const entry of cases) await t.test(entry.name, () => {
+    const check = () => checkMounts(entry.path, [root, ...entry.rows].join('\n'), entry.id);
+    if (entry.reject) assert.throws(check, { code: 'workspace_access_unavailable' });
+    else assert.doesNotThrow(check);
+  });
+});
+
+function fakeWorkspaceAccess(t, { onAccount = () => {}, onWorkspace = () => {}, nested = false, extraMounts = [] } = {}) {
+  const workspace = { id: 'workspace', path: '/disk/projects/workspace' };
+  const state = { mountId: nested ? '23' : '22', inode: 100, writes: [], accountChecks: 0, workspaceChecks: 0 };
+  const handles = new Map();
+  let nextFd = 10, acl = base;
+  const gate = createWorkspaceAccess({
+    resolveWorkspace() { onWorkspace(++state.workspaceChecks, state); return workspace; },
+    resolveAccount() { onAccount(++state.accountChecks, state); return { name: 'runner', uid: 40003, gid: 40003 }; },
+  }, {
+    host: { platform: 'linux', geteuid: () => 0 },
+    resolvePath: async path => path,
+    async openDirectory(path) {
+      const match = /^\/proc\/self\/fd\/(\d+)\/([^/]+)$/.exec(path);
+      const resolved = path === '/' ? '/' : `${handles.get(Number(match?.[1])).path.replace(/\/$/, '')}/${match[2]}`;
+      const target = resolved === workspace.path;
+      const record = { path: resolved, mountId: resolved === '/' ? '21' : nested && resolved === '/disk' ? '22' : state.mountId,
+        dev: resolved === '/' ? 1 : nested && resolved !== '/disk' ? 3 : 2, ino: target ? state.inode : resolved.length };
+      const fd = nextFd++;
+      handles.set(fd, record);
+      return {
+        fd,
+        async stat({ bigint = false } = {}) {
+          const values = { dev: record.dev, ino: record.ino, uid: 0, gid: 0, mode: target ? 0o40700 : 0o40755, ctimeNs: 1 };
+          return Object.fromEntries(Object.entries(values).map(([key, value]) => [key, bigint ? BigInt(value) : value]));
+        },
+        async close() { handles.delete(fd); },
+      };
+    },
+    async read(path) {
+      if (path === '/etc/passwd') return 'root:x:0:0:root:/root:/bin/sh\nrunner:x:40003:40003::/nonexistent:/usr/sbin/nologin\n';
+      if (path === '/proc/self/mountinfo') {
+        const root = ['21 1 8:1 / / rw - ext4 /dev/root rw', ...extraMounts, ''].join('\n');
+        if (state.missingMount) return root;
+        return root + (nested ? `22 21 8:2 / /disk rw - ext4 /dev/data rw\n${state.mountId} 22 8:3 / /disk/projects rw - ext4 /dev/nested rw\n` :
+          `${state.mountId} 21 8:2 / /disk rw - ext4 /dev/data rw\n`);
+      }
+      const match = /^\/proc\/self\/fdinfo\/(\d+)$/.exec(path);
+      assert.ok(match, `unexpected read: ${path}`);
+      return `mnt_id:\t${handles.get(Number(match[1])).mountId}\n`;
+    },
+    async command(tool, args, fd) {
+      assert.equal(handles.get(fd)?.path, workspace.path);
+      if (tool === 'getfacl') return acl;
+      assert.equal(tool, 'setfacl');
+      state.writes.push({ args, fd });
+      acl = `${args.find(arg => arg.startsWith('--set=')).slice('--set='.length).split(',').join('\n')}\n`;
+      return '';
+    },
+  });
+  t.after(() => { gate.dispose(); assert.equal(handles.size, 0, 'all directory handles must close'); });
+  gate.noteFailure('session', 'peer', workspace);
+  return { gate, state };
+}
+
+test('fake Linux IO grants access across filesystem boundaries', async t => {
+  const cases = [
+    { name: 'independent filesystem' },
+    { name: 'nested independent filesystem', nested: true },
+    { name: 'alias on parent filesystem does not alias the workspace',
+      extraMounts: ['24 21 8:1 /disk/projects /alias rw - ext4 /dev/root rw'] },
+    { name: 'aliases on both ancestor filesystems do not alias the nested workspace', nested: true,
+      extraMounts: ['24 21 8:1 /disk/projects /alias rw - ext4 /dev/root rw',
+        '25 21 8:2 /projects/workspace /alias-nested rw - ext4 /dev/data rw'] },
+  ];
+  for (const entry of cases) await t.test(entry.name, async t => {
+    const { gate, state } = fakeWorkspaceAccess(t, entry);
+    const preview = await gate.prepare('session', 'peer');
+    assert.equal(preview.path, '/disk/projects/workspace');
+    assert.deepEqual(state.writes, [], 'preview does not write an ACL');
+    assert.deepEqual(await gate.grant('session', 'peer', preview.token), { ok: true });
+    assert.equal(state.writes.length, 1);
+    assert.ok(state.writes[0].args.includes('-n'));
+    assert.match(state.writes[0].args.join(' '), /user:40003:rwx/);
+    await assert.rejects(gate.grant('session', 'peer', preview.token), { code: 'workspace_access_stale' });
+    assert.equal(state.writes.length, 1, 'reused tokens must not write');
+  });
+});
+
+test('fake Linux IO fails closed on missing metadata and target-filesystem aliases', async t => {
+  const cases = [
+    { name: 'missing mount metadata', missingMount: true },
+    { name: 'overlapping target alias', extraMounts: ['24 21 8:2 /projects /alias rw - ext4 /dev/data rw'] },
+  ];
+  for (const entry of cases) await t.test(entry.name, async t => {
+    const { gate, state } = fakeWorkspaceAccess(t, entry);
+    state.missingMount = entry.missingMount;
+    await assert.rejects(gate.prepare('session', 'peer'), { code: 'workspace_access_unavailable' });
+    assert.deepEqual(state.writes, []);
+  });
+});
+
+test('fake Linux IO rejects mount and directory changes without writing ACLs', async t => {
+  const cases = [
+    { name: 'target mount changes after preview', afterPreview: state => { state.mountId = '23'; } },
+    { name: 'target mount changes in final account recheck', onAccount: (count, state) => { if (count === 3) state.mountId = '23'; } },
+    { name: 'target mount changes in final workspace recheck', onWorkspace: (count, state) => { if (count === 3) state.mountId = '23'; } },
+    { name: 'directory is replaced in final workspace recheck', onWorkspace: (count, state) => { if (count === 3) state.inode++; } },
+    { name: 'mount metadata disappears in final account recheck', onAccount: (count, state) => { if (count === 3) state.missingMount = true; } },
+  ];
+  for (const entry of cases) await t.test(entry.name, async t => {
+    const { gate, state } = fakeWorkspaceAccess(t, entry);
+    const preview = await gate.prepare('session', 'peer');
+    entry.afterPreview?.(state);
+    await assert.rejects(gate.grant('session', 'peer', preview.token), { code: 'workspace_access_stale' });
+    assert.deepEqual(state.writes, []);
+  });
+});
+
 test('real root Linux ACL grant requires matching failure, peer, directory and single-use token', async t => {
   if (process.platform !== 'linux' || process.geteuid() !== 0) return t.skip('requires root Linux');
   try { await Promise.all(['/usr/bin/getfacl', '/usr/bin/setfacl'].map(p => access(p))); } catch { return t.skip('requires Linux ACL tools'); }

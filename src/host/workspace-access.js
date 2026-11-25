@@ -27,40 +27,53 @@ export function checkWorkspacePath(path, protectedPaths, homes) {
       /^\/(?:home(?:\/[^/]+)?|tmp|mnt|srv|media)$/.test(path) || homes.some(home => home !== '/' && within(home, path)) ||
       protectedPaths.map(normalizedProtected).some(p => within(path, p) || within(p, path))) fail('unavailable');
 }
-// Only traverse the Host root mount. Also exclude the source of any visible
-// bind alias on that filesystem, including a subtree mounted over a protected path.
-export function checkMounts(path, mountinfo, id) {
+const decodeMountPath = value => typeof value === 'string' ? value.replace(/\\([0-7]{3})/g,
+  (_, octal) => String.fromCharCode(parseInt(octal, 8))) : undefined;
+function mountRecord(path, mountinfo, id) {
   const rows = mountinfo.trim().split('\n').map(l => l.split(' '));
-  const root = rows.find(r => r[0] === id);
-  if (!root || root[3] !== '/' || root[4] !== '/') fail('unavailable');
+  const root = rows.find(r => r[0] === id), mountpoint = decodeMountPath(root?.[4]);
+  if (!root || decodeMountPath(root[3]) !== '/' || !canonical(mountpoint) || !within(path, mountpoint)) fail('unavailable');
+  return { rows, root, mountpoint };
+}
+// Full filesystems may be mounted anywhere. Exclude visible bind alias sources
+// on the target filesystem, not hidden directories beneath an ancestor mount.
+export function checkMounts(path, mountinfo, id) {
+  const { rows, root, mountpoint } = mountRecord(path, mountinfo, id);
+  const relative = posix.join('/', posix.relative(mountpoint, path));
   for (const row of rows) {
     if (row[0] === id || row[2] !== root[2]) continue;
-    const source = row[3].replace(/\\([0-7]{3})/g, (_, octal) => String.fromCharCode(parseInt(octal, 8)));
-    if (!canonical(source) || within(path, source) || within(source, path)) fail('unavailable');
+    const source = decodeMountPath(row[3]);
+    if (!canonical(source) || within(relative, source) || within(source, relative)) fail('unavailable');
   }
 }
-async function mountId(handle) {
-  const info = await readFile(`/proc/self/fdinfo/${handle.fd}`, 'utf8');
+async function mountId(handle, read) {
+  const info = await read(`/proc/self/fdinfo/${handle.fd}`, 'utf8');
   const id = /^mnt_id:\s*(\d+)$/m.exec(info)?.[1];
   if (!id) fail('unavailable');
   return id;
 }
-async function pin(path) {
+async function pin(path, openDirectory, read) {
   const flags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
-  let handle = await open('/', flags);
+  let handle = await openDirectory('/', flags);
   try {
-    const rootMount = await mountId(handle);
-    checkMounts(path, await readFile('/proc/self/mountinfo', 'utf8'), rootMount);
+    let mount = await mountId(handle, read);
+    mountRecord(path, await read('/proc/self/mountinfo', 'utf8'), mount);
     for (const component of path.slice(1).split('/')) {
       const parent = await handle.stat();
       if (parent.uid !== 0 || ((parent.mode & 0o022) && !(parent.mode & 0o1000))) fail('unavailable');
-      const next = await open(`/proc/self/fd/${handle.fd}/${component}`, flags);
+      const next = await openDirectory(`/proc/self/fd/${handle.fd}/${component}`, flags);
       const previous = handle;
       handle = next;
       await previous.close();
-      if ((await handle.stat()).uid !== 0 || await mountId(handle) !== rootMount) fail('unavailable');
+      if ((await handle.stat()).uid !== 0) fail('unavailable');
+      const nextMount = await mountId(handle, read);
+      if (nextMount !== mount) {
+        mountRecord(path, await read('/proc/self/mountinfo', 'utf8'), nextMount);
+        mount = nextMount;
+      }
     }
-    return handle;
+    checkMounts(path, await read('/proc/self/mountinfo', 'utf8'), mount);
+    return { handle, mount };
   } catch (error) { await handle.close(); throw error; }
 }
 function aclCommand(tool, args, fd) {
@@ -78,7 +91,6 @@ function aclCommand(tool, args, fd) {
     child.once('close', code => code === 0 && !overflow ? resolve(text) : reject(new Error('ACL utility failed')));
   });
 }
-const readAcl = fd => aclCommand('getfacl', ['-cEn'], fd);
 function parseAcl(text) {
   const entries = new Map();
   for (const line of text.trim().split('\n')) {
@@ -103,7 +115,10 @@ export function workspaceAclPlan(text, uid) {
 const validNumber = n => Number.isInteger(n) && n > 0 && n < 0xffffffff;
 const identity = stat => [stat.dev, stat.ino, stat.uid, stat.gid, stat.mode, stat.ctimeNs].join(':');
 
-export function createWorkspaceAccess({ resolveWorkspace, resolveAccount, protectedPaths = [] }) {
+export function createWorkspaceAccess({ resolveWorkspace, resolveAccount, protectedPaths = [] }, {
+  host = process, openDirectory = open, read = readFile, resolvePath = realpath, command = aclCommand,
+} = {}) {
+  const readAcl = fd => command('getfacl', ['-cEn'], fd);
   const failures = new Map();
   let busy = false, disposed = false;
   const now = () => performance.now();
@@ -112,14 +127,14 @@ export function createWorkspaceAccess({ resolveWorkspace, resolveAccount, protec
     return JSON.stringify([session, peer]);
   }
   function noteFailure(session, peer, workspace) {
-    if (disposed || process.platform !== 'linux' || process.geteuid() !== 0 || !workspace?.id || !canonical(workspace.path)) return;
+    if (disposed || host.platform !== 'linux' || host.geteuid() !== 0 || !workspace?.id || !canonical(workspace.path)) return;
     const k = key(session, peer);
     failures.delete(k);
     if (failures.size >= 128) failures.delete(failures.keys().next().value);
     failures.set(k, { id: workspace.id, path: workspace.path, expires: now() + 120000 });
   }
   async function operate(session, peer, token, grant) {
-    if (disposed || process.platform !== 'linux' || process.geteuid() !== 0) fail('unavailable');
+    if (disposed || host.platform !== 'linux' || host.geteuid() !== 0) fail('unavailable');
     if (busy) fail('busy');
     const k = key(session, peer), failure = failures.get(k), preview = failure?.preview;
     function fresh() {
@@ -136,15 +151,20 @@ export function createWorkspaceAccess({ resolveWorkspace, resolveAccount, protec
       if (workspace?.id !== failure.id || workspace.path !== failure.path) fail('stale');
       const account = await resolveAccount();
       if (!account || !validNumber(account.uid) || !validNumber(account.gid) || typeof account.name !== 'string' || !account.name) fail('unavailable');
-      const homes = (await readFile('/etc/passwd', 'utf8')).split('\n').map(l => l.split(':')[5]).filter(canonical);
-      const protectedReal = await Promise.all(protectedPaths.map(p => realpath(normalizedProtected(p))));
+      const homes = (await read('/etc/passwd', 'utf8')).split('\n').map(l => l.split(':')[5]).filter(canonical);
+      const protectedReal = await Promise.all(protectedPaths.map(p => resolvePath(normalizedProtected(p))));
       checkWorkspacePath(failure.path, [...protectedPaths, ...protectedReal], homes);
-      handle = await pin(failure.path);
+      async function openPinned() {
+        try { return await pin(failure.path, openDirectory, read); }
+        catch (error) { if (grant) fail('stale'); throw error; }
+      }
+      const pinned = await openPinned();
+      handle = pinned.handle;
       const stat = await handle.stat({ bigint: true });
       if (stat.uid === BigInt(account.uid)) fail('unavailable'); // owner entry takes precedence
       const acl = await readAcl(handle.fd);
       const expected = workspaceAclPlan(acl, account.uid);
-      const snapshot = JSON.stringify([identity(stat), acl, account.name, account.uid, account.gid]);
+      const snapshot = JSON.stringify([identity(stat), pinned.mount, acl, account.name, account.uid, account.gid]);
       fresh();
       if (!grant) {
         const ticket = randomBytes(32).toString('hex');
@@ -155,13 +175,16 @@ export function createWorkspaceAccess({ resolveWorkspace, resolveAccount, protec
       const confirmedAccount = await resolveAccount();
       const confirmedWorkspace = await resolveWorkspace(session);
       if (confirmedWorkspace?.id !== failure.id || confirmedWorkspace.path !== failure.path ||
-          confirmedAccount?.name !== account.name || confirmedAccount.uid !== account.uid || confirmedAccount.gid !== account.gid ||
-          identity(await handle.stat({ bigint: true })) !== identity(stat)) fail('stale');
+          confirmedAccount?.name !== account.name || confirmedAccount.uid !== account.uid || confirmedAccount.gid !== account.gid) fail('stale');
+      const confirmed = await openPinned(), previous = handle;
+      handle = confirmed.handle;
+      await previous.close();
+      if (confirmed.mount !== pinned.mount || identity(await handle.stat({ bigint: true })) !== identity(stat)) fail('stale');
       fresh(); failures.delete(k);
       // Replace only the access ACL with the inspected entries plus our grant;
       // never let setfacl recalculate a mask against a second, uninspected ACL.
       const access = JSON.parse(expected).filter(([key]) => !key.startsWith('default:'));
-      await aclCommand('setfacl', ['-n', `--set=${access.map(([key, perms]) => `${key}:${perms}`).join(',')}`], handle.fd);
+      await command('setfacl', ['-n', `--set=${access.map(([key, perms]) => `${key}:${perms}`).join(',')}`], handle.fd);
       if (sorted(parseAcl(await readAcl(handle.fd))) !== expected) fail('failed');
       return { ok: true };
     } catch (error) {
